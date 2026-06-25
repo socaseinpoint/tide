@@ -1,0 +1,231 @@
+"""tide.arc.board — render the single STREAM board (``tide status`` / ``tide arc status``).
+
+Ported from the arcs ``status`` renderer (architect ``arcs status``), retargeted to
+``<project>/.tide/arcs/`` and extended with tide's two net-new flags. The board is
+a *rendered* projection — never stored — of the work stream:
+
+* **STREAM** — every top-level entry in numeric order. An arc is
+  ``NN-slug  [status]  goal-line``; a goal is the same PLUS a computed ``(N/M ✓)``
+  progress badge and its indented sub-arcs (``✓`` closed / ``○`` open).
+* **N/M badge** — closed/total of the goal's on-disk sub-arcs (``__…__`` counts as
+  closed); **never hand-ticked**. A goal with **zero** sub-arcs shows an EMPTY
+  badge (no ``0/0``) — the badge only means something once there is a substream.
+* **drift flag** — tide invention: an OPEN entry whose stamped ``cannon-rev``
+  differs from the current one has drifted (cannon moved under it) and is flagged.
+* **unmerged-delta flag** — tide invention: a CLOSED arc still carrying an
+  unmerged ``delta.md`` is the between-arcs barrier offender (decision 9); listed
+  so the orchestrator merges it through the gate.
+* **CANDIDATES** — the separately-numbered backlog (``NN-slug  from <arc>``).
+
+All rendering is pure (argparse-free, snapshot-testable); :func:`cmd_status` is the
+thin CLI handler ``cli.py`` wires for both ``tide status`` and ``tide arc status``.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+from typing import List, Optional, Tuple
+
+from .. import fields, paths, slug
+from ..cannon import rev
+from . import candidate, stream
+
+# Numeric prefix of an entry dir (tolerates the closed ``__…__`` wrapper) — used to
+# order open and closed entries on ONE continuous numeric axis (name-sort would put
+# ``__03__`` after ``01`` because '_' > digits in ASCII).
+_NUM_RE = re.compile(r"^_{0,2}(\d{2,})-")
+
+TICK_CLOSED = "✓"
+TICK_OPEN = "○"
+BADGE_MARK = "✓"
+DRIFT_FLAG = "⚠ drift"
+
+
+# --- entry primitives ------------------------------------------------------
+
+def _entry_num(name: str) -> int:
+    """Numeric prefix of an entry dir name (0 when it has none) for stable sort."""
+    m = _NUM_RE.match(name)
+    return int(m.group(1), 10) if m else 0
+
+
+def _stream_entries(stream_dir: Path) -> List[Path]:
+    """Child entry dirs of *stream_dir* (excludes ``candidates/``), numeric order."""
+    if not Path(stream_dir).is_dir():
+        return []
+    entries = [
+        p
+        for p in Path(stream_dir).iterdir()
+        if p.is_dir() and p.name != paths.CANDIDATES_DIRNAME
+    ]
+    return sorted(entries, key=lambda p: (_entry_num(p.name), p.name))
+
+
+def _field(entry_dir: Path, key: str) -> Optional[str]:
+    """Read a passport field (goal doc if present, else arc.md) for an entry."""
+    return fields.read_field(stream.passport_path(entry_dir), key)
+
+
+def _status(entry_dir: Path) -> str:
+    """The entry's ``status:`` (``done`` for a closed dir whose field is missing)."""
+    s = _field(entry_dir, "status")
+    if s:
+        return s
+    return "done" if slug.is_closed_entry(entry_dir.name) else "active"
+
+
+def _goal_line(entry_dir: Path) -> str:
+    """The entry's one-line ``goal:`` text (empty string when unset)."""
+    return (_field(entry_dir, "goal") or "").strip()
+
+
+def _supersedes_suffix(entry_dir: Path) -> str:
+    """``(supersedes <x>)`` suffix when the entry carries a ``supersedes:`` link."""
+    prev = _field(entry_dir, "supersedes")
+    return "  (supersedes {0})".format(prev) if prev else ""
+
+
+def _drift_suffix(entry_dir: Path, current_rev: str) -> str:
+    """Drift flag for an OPEN entry whose stamped cannon-rev != *current_rev*.
+
+    Closed entries are done (and may legitimately carry an older stamp), so drift
+    is only flagged on still-open work — the case the sync barrier cares about.
+    """
+    if slug.is_closed_entry(entry_dir.name):
+        return ""
+    stamped = _field(entry_dir, "cannon-rev")
+    if stamped and stamped != current_rev:
+        return "  {0}".format(DRIFT_FLAG)
+    return ""
+
+
+# --- goal badge ------------------------------------------------------------
+
+def goal_badge(goal_dir: Path) -> Optional[Tuple[int, int]]:
+    """Computed ``(closed, total)`` of a goal's sub-arcs, or None for zero sub-arcs.
+
+    Counts the goal's ``arcs/`` substream entries; ``__…__`` ones are closed. A
+    goal with NO sub-arcs returns None → an EMPTY badge (never ``0/0``), since the
+    progress fraction is meaningless before a substream exists.
+    """
+    sub = Path(goal_dir) / paths.ARCS_DIRNAME
+    if not sub.is_dir():
+        return None
+    entries = [p for p in sub.iterdir() if p.is_dir() and p.name != paths.CANDIDATES_DIRNAME]
+    if not entries:
+        return None
+    closed = sum(1 for p in entries if slug.is_closed_entry(p.name))
+    return (closed, len(entries))
+
+
+def _badge_suffix(goal_dir: Path) -> str:
+    """``  (N/M ✓)`` badge suffix for a goal, or ``""`` when it has no sub-arcs."""
+    badge = goal_badge(goal_dir)
+    if badge is None:
+        return ""
+    closed, total = badge
+    return "  ({0}/{1} {2})".format(closed, total, BADGE_MARK)
+
+
+# --- line rendering --------------------------------------------------------
+
+def _top_line(entry_dir: Path, current_rev: str) -> str:
+    """Render one top-level entry line (arc or goal, with badge/drift/supersedes)."""
+    is_goal = slug.is_goal_entry(entry_dir.name)
+    line = "  {name}  [{status}]".format(name=entry_dir.name, status=_status(entry_dir))
+    goal_line = _goal_line(entry_dir)
+    if goal_line:
+        line += "  {0}".format(goal_line)
+    if is_goal:
+        line += _badge_suffix(entry_dir)
+    line += _supersedes_suffix(entry_dir)
+    line += _drift_suffix(entry_dir, current_rev)
+    return line
+
+
+def _sub_line(sub_dir: Path, current_rev: str) -> str:
+    """Render one indented sub-arc line (``✓`` closed without status / ``○`` open)."""
+    closed = slug.is_closed_entry(sub_dir.name)
+    tick = TICK_CLOSED if closed else TICK_OPEN
+    line = "    {tick} {name}".format(tick=tick, name=sub_dir.name)
+    if not closed:
+        line += "  [{0}]".format(_status(sub_dir))
+    goal_line = _goal_line(sub_dir)
+    if goal_line:
+        line += "  {0}".format(goal_line)
+    line += _supersedes_suffix(sub_dir)
+    line += _drift_suffix(sub_dir, current_rev)
+    return line
+
+
+# --- whole-board render ----------------------------------------------------
+
+def render_board(root: Path) -> str:
+    """Render the full STREAM board for project *root* (pure, snapshot-testable)."""
+    root = Path(root)
+    current_rev = rev.compute(root)
+    arcs = paths.arcs_dir(root)
+    lines: List[str] = ["STREAM"]
+
+    entries = _stream_entries(arcs)
+    if not entries:
+        lines.append("  (empty stream)")
+    for entry in entries:
+        lines.append(_top_line(entry, current_rev))
+        if slug.is_goal_entry(entry.name):
+            for sub in _stream_entries(entry / paths.ARCS_DIRNAME):
+                lines.append(_sub_line(sub, current_rev))
+
+    # tide net-new: between-arcs barrier offenders (closed arcs w/ unmerged delta).
+    from .. import sync  # lazy: sync imports arc.stream at top, not arc.board.
+
+    offenders = sync.unmerged_deltas(root)
+    if offenders:
+        lines.append("")
+        lines.append("UNMERGED DELTAS")
+        for off in offenders:
+            lines.append(
+                "  ! {name}  → tide cannon merge {slug}".format(
+                    name=off.name, slug=slug.entry_slug(off.name)
+                )
+            )
+
+    # CANDIDATES backlog (separately numbered).
+    cands = candidate.list_candidates(root)
+    if cands:
+        lines.append("")
+        lines.append("CANDIDATES")
+        for c in cands:
+            lines.append("  {stem}  from {origin}".format(stem=c["stem"], origin=c["from"] or "-"))
+
+    return "\n".join(lines)
+
+
+# --- CLI handler -----------------------------------------------------------
+
+def _render_all(root: Path) -> str:
+    """Roster-wide STREAM boards from a control-home (one block per project)."""
+    from .. import roster
+
+    blocks: List[str] = []
+    for entry in roster.read_roster(root):
+        proj = Path(entry["path"]).expanduser()
+        header = "=== {name}  ({path}) ===".format(name=entry["name"], path=entry["path"])
+        if not paths.tide_dir(proj).is_dir():
+            blocks.append("{0}\n  (no .tide/ — not a tide project)".format(header))
+            continue
+        blocks.append("{0}\n{1}".format(header, render_board(proj)))
+    if not blocks:
+        return "(roster is empty)"
+    return "\n\n".join(blocks)
+
+
+def cmd_status(args) -> int:
+    """Print the STREAM board (``tide status`` / ``tide arc status``); ``--all`` = roster-wide."""
+    root = paths.require_tide_root()
+    if getattr(args, "all", False):
+        print(_render_all(root))
+    else:
+        print(render_board(root))
+    return 0

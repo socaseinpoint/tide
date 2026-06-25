@@ -1,0 +1,212 @@
+"""tide.launcher.seed — resolve context into a seed string for a fresh session.
+
+The seed is the opening payload a NEW Claude session is launched with: the role
+prompt + the project's living-IS cannon + (optionally) the active arc passport +
+the control-home roster. It orients a fresh orchestrator session the same way the
+SessionStart hook orients an in-place one, but it is *transported* by a terminal
+adapter (``tide.adapters``) into a brand-new terminal rather than printed inline.
+
+Two layers, mirroring the rest of the package:
+
+* :func:`build_seed` — **pure** string assembly from already-resolved pieces
+  (cannon text, arc text, roster text, prompt text). Argparse-free, snapshot-
+  testable, never touches disk.
+* :func:`seed_for_project` — the **disk** wrapper: reads ``CANON.md``, the global
+  role prompt (``prompts/<role>.md``, shipped in U12 — absent is tolerated), the
+  selected arc's passport, and the control-home roster, then calls
+  :func:`build_seed`.
+
+Seed construction is deliberately **adapter-agnostic**: the adapter only carries
+the returned string, so adapters stay thin and interchangeable.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import List, Optional
+
+from .. import paths, slug
+from ..cannon import store
+from ..hooks.session_start import ROLE_REMINDERS
+
+ROLE_ORCHESTRATOR = "orchestrator"
+ROLE_WORKER = "worker"
+
+SEED_TITLE = "# tide session seed"
+
+
+# --- prompt resolution -----------------------------------------------------
+
+def prompt_file_for_role(role: str) -> Path:
+    """Path to the shipped global prompt for *role* (``prompts/<role>.md``)."""
+    return paths.global_prompts_dir() / "{0}.md".format(role)
+
+
+def read_role_prompt(role: str) -> Optional[str]:
+    """Return the shipped ``prompts/<role>.md`` text, or None when not yet shipped.
+
+    The prompt bodies land in U12; until then (and in a source tree without them)
+    this returns None and :func:`build_seed` falls back to the one-line role
+    reminder so a seed is always well-formed.
+    """
+    f = prompt_file_for_role(role)
+    if not f.is_file():
+        return None
+    text = f.read_text(encoding="utf-8").strip()
+    return text or None
+
+
+def _role_block(role: str, prompt_text: Optional[str]) -> str:
+    """The role section body: the shipped prompt if present, else the reminder."""
+    if prompt_text:
+        return prompt_text
+    return ROLE_REMINDERS.get(role, ROLE_REMINDERS[ROLE_WORKER])
+
+
+# --- arc passport resolution -----------------------------------------------
+
+def _find_open_entry(root: Path, ref: str) -> Optional[Path]:
+    """First OPEN top-stream entry whose slug matches *ref* (goal preferred)."""
+    arcs = paths.arcs_dir(root)
+    if not arcs.is_dir():
+        return None
+    want = slug.slugify(ref)
+    matches = [
+        p
+        for p in arcs.iterdir()
+        if p.is_dir()
+        and p.name != paths.CANDIDATES_DIRNAME
+        and not slug.is_closed_entry(p.name)
+        and slug.entry_slug(p.name) == want
+    ]
+    if not matches:
+        return None
+    # Prefer the goal when a slug names both a goal and a plain arc.
+    matches.sort(key=lambda p: (not slug.is_goal_entry(p.name), p.name))
+    return matches[0]
+
+
+def read_arc_passport(root: Path, ref: str) -> Optional[str]:
+    """Return the passport text (goal doc / arc.md) of the open arc *ref*, or None."""
+    from ..arc.stream import passport_path  # lazy: arc.stream is a heavier sibling.
+
+    entry = _find_open_entry(root, ref)
+    if entry is None:
+        return None
+    passport = passport_path(entry)
+    if not passport.is_file():
+        return None
+    return passport.read_text(encoding="utf-8").strip() or None
+
+
+# --- launch hint -----------------------------------------------------------
+
+def launch_command(project_name: str, arc_ref: Optional[str] = None) -> str:
+    """The human-readable jump command the fresh session can re-run (``tide …``)."""
+    if arc_ref:
+        return "tide {0} {1}".format(project_name, arc_ref)
+    return "tide {0}".format(project_name)
+
+
+# --- pure assembly ---------------------------------------------------------
+
+def build_seed(
+    *,
+    project_name: str,
+    role: str = ROLE_ORCHESTRATOR,
+    cannon_text: str = "",
+    roster_text: Optional[str] = None,
+    arc_ref: Optional[str] = None,
+    arc_text: Optional[str] = None,
+    prompt_text: Optional[str] = None,
+    launch_cmd: Optional[str] = None,
+) -> str:
+    """Assemble the seed string from already-resolved pieces (pure, no I/O).
+
+    Sections, in order: a header naming the project + role, the role block (shipped
+    prompt or the fallback reminder), the project ``CANON.md``, the active-arc
+    passport (only when *arc_ref* is given), the control-home roster (only when
+    *roster_text* is given), and a closing launch hint. Empty pieces are rendered
+    as an explicit ``(…)`` note so the shape is stable for snapshot tests.
+    """
+    lines: List[str] = [
+        SEED_TITLE,
+        "",
+        "You are opening a fresh **{0}** tide session for project **{1}**.".format(
+            role.upper(), project_name
+        ),
+        "",
+        "## Role",
+        _role_block(role, prompt_text),
+        "",
+        "## CANON.md — {0}".format(project_name),
+        cannon_text.strip() if cannon_text.strip() else "(no cannon yet — run 'tide cannon init')",
+    ]
+
+    if arc_ref:
+        lines += [
+            "",
+            "## Active arc — {0}".format(arc_ref),
+            arc_text.strip() if (arc_text and arc_text.strip()) else "(no open arc passport found)",
+        ]
+
+    if roster_text is not None:
+        lines += [
+            "",
+            "## Roster (control-home)",
+            roster_text.strip() if roster_text.strip() else "(no projects)",
+        ]
+
+    lines += [
+        "",
+        "## Launch",
+        "Re-enter from a terminal with: `{0}`".format(
+            launch_cmd or launch_command(project_name, arc_ref)
+        ),
+    ]
+    return "\n".join(lines) + "\n"
+
+
+# --- disk wrapper ----------------------------------------------------------
+
+def seed_for_project(
+    root: Path,
+    *,
+    arc_ref: Optional[str] = None,
+    role: str = ROLE_ORCHESTRATOR,
+    control_home: Optional[Path] = None,
+) -> str:
+    """Build the seed for project *root*, reading cannon / arc / prompt / roster.
+
+    *control_home* (when given and a real control-home) supplies the roster block
+    so a cross-project orchestrator session sees the whole portfolio. A missing
+    CANON.md, an unshipped prompt, or an absent arc all degrade to explicit notes
+    rather than raising — a seed is always producible.
+    """
+    root = Path(root)
+    project_name = root.resolve().name
+
+    canon = paths.canon_file(root)
+    cannon_text = canon.read_text(encoding="utf-8") if canon.is_file() else ""
+
+    arc_text = read_arc_passport(root, arc_ref) if arc_ref else None
+    prompt_text = read_role_prompt(role)
+
+    roster_text: Optional[str] = None
+    if control_home is not None:
+        from .. import roster as roster_mod
+
+        home = Path(control_home)
+        if paths.is_control_home(home):
+            roster_text = roster_mod.render_list(home)
+
+    return build_seed(
+        project_name=project_name,
+        role=role,
+        cannon_text=cannon_text,
+        roster_text=roster_text,
+        arc_ref=arc_ref,
+        arc_text=arc_text,
+        prompt_text=prompt_text,
+        launch_cmd=launch_command(project_name, arc_ref),
+    )
