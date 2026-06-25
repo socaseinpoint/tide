@@ -17,6 +17,13 @@ Two doors:
 * **new** — every open arc as a fresh start (seeded from its passport), plus a
   ``just chat`` option (no arc — the plain head seed, ``MIGRATE.md``).
 
+Before EITHER door launches, a light **in-flight gate** runs at the single launch
+choke point: a file-signal read (over ``tide status``, NOT process-locking) for
+work still being processed — unmerged deltas, running/output contracts, drift. If
+anything is in flight the human is shown it and asked to wait/enter-anyway/cancel,
+so a controlled entry never drops them into a half-merged, half-closed state. (A
+real concurrent-session lock is a separate candidate, not this.)
+
 Layering matches the package: the listing/classification/rendering helpers are
 pure (argparse- and exec-free, snapshot-testable); :func:`cmd_go` is the thin
 interactive handler, and the actual launch is delegated to
@@ -26,9 +33,10 @@ interactive handler, and the actual launch is delegated to
 from __future__ import annotations
 
 import argparse
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import Callable, List, Optional, Tuple
 
 from .. import fields, slug
 from ..adapters.base import persist_seed
@@ -45,6 +53,16 @@ KIND_RAW = "raw"            # no handoff (chat ended without one) → seed from 
 
 # The "no arc, plain head" choice in the NEW menu — index 0, reserved.
 JUST_CHAT = "just chat"
+
+# Contract states that mean "still being processed" (not yet sealed) — the
+# in-flight gate flags these so the human isn't dropped onto half-done work.
+LIVE_CONTRACT_STATES = ("running", "output")
+
+# In-flight WAIT bounds: poll the file signals this often, up to this long, before
+# giving up and re-asking. Kept short — this is a courtesy wait for another session
+# to finish its merge, not a process lock.
+WAIT_INTERVAL_S = 2.0
+WAIT_MAX_S = 60.0
 
 
 class GoError(StreamError):
@@ -247,16 +265,160 @@ def seed_for_new_arc(root: Path, arc_dir: Path, *, dry_run: bool = False) -> str
     return str(persist_seed(text, "tide-go-new-{0}".format(slug.slugify(ref) or "arc")))
 
 
+# --- in-flight gate (file signals over `tide status`, NOT a process lock) ---
+
+@dataclass
+class InFlight:
+    """A snapshot of "work still being processed" — three file signals (pure read).
+
+    * ``unmerged`` — closed arcs whose ``delta.md`` is written but un-merged (the
+      between-arcs barrier offenders).
+    * ``contracts`` — ``(arc, state)`` of contracts still ``running``/``output``
+      (signed but not sealed).
+    * ``drift`` — open arcs whose stamped ``cannon-rev`` lags the current one.
+
+    ``clean`` is the gate's verdict: nothing in flight ⇒ enter silently.
+    """
+
+    unmerged: List[str]
+    contracts: List[Tuple[str, str]]
+    drift: List[str]
+
+    @property
+    def clean(self) -> bool:
+        return not (self.unmerged or self.contracts or self.drift)
+
+
+def inflight_signals(root: Path) -> InFlight:
+    """Read the three in-flight signals for *root* over the same on-disk truth as
+    ``tide status`` (pure, no locking). Lazy imports keep the launcher light.
+    """
+    from .. import sync
+    from ..arc.stream import passport_path
+    from ..cannon import rev
+    from ..contract import lifecycle
+
+    unmerged = [p.name for p in sync.unmerged_deltas(Path(root))]
+    contracts = [
+        (str(c["arc"]), str(c["state"]))
+        for c in lifecycle.list_contracts(Path(root))
+        if c.get("state") in LIVE_CONTRACT_STATES
+    ]
+    current = rev.compute(Path(root))
+    drift: List[str] = []
+    for entry in board.open_entries(Path(root)):
+        stamped = fields.read_field(passport_path(entry), "cannon-rev")
+        if stamped and stamped != current:
+            drift.append(entry.name)
+    return InFlight(unmerged, contracts, drift)
+
+
+def render_inflight(s: InFlight) -> str:
+    """One short block: ``clean`` line, or the in-flight signals that are present."""
+    if s.clean:
+        return "in-flight check: clean (no unmerged deltas / running contracts / drift)"
+    lines = ["⚠ in-flight check — work still being processed:"]
+    if s.unmerged:
+        lines.append("  unmerged deltas: {0}".format(", ".join(s.unmerged)))
+    if s.contracts:
+        lines.append(
+            "  running/output contracts: {0}".format(
+                ", ".join("{0} [{1}]".format(a, st) for a, st in s.contracts)
+            )
+        )
+    if s.drift:
+        lines.append("  drift: {0}".format(", ".join(s.drift)))
+    return "\n".join(lines)
+
+
+def wait_until_settled(
+    root: Path,
+    *,
+    interval: float = WAIT_INTERVAL_S,
+    max_wait: float = WAIT_MAX_S,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    signal_fn: Callable[[Path], InFlight] = inflight_signals,
+) -> bool:
+    """Poll the in-flight signals until clean or *max_wait* elapses; True iff clean.
+
+    A bounded courtesy wait for another session to finish its merge — never an
+    unbounded block. ``sleep_fn``/``signal_fn`` are injected so tests drive it
+    without real time or disk.
+    """
+    waited = 0.0
+    while True:
+        if signal_fn(Path(root)).clean:
+            return True
+        if waited >= max_wait:
+            return False
+        sleep_fn(interval)
+        waited += interval
+
+
+def _prompt_choice(prompt: str, allowed: Tuple[str, ...], default: str) -> str:
+    """Read one lowercased letter from *allowed*; *default* on EOF or anything else."""
+    try:
+        ans = input(prompt).strip().lower()
+    except EOFError:
+        return default
+    first = ans[:1]
+    return first if first in allowed else default
+
+
+def _inflight_gate(root: Path, *, dry_run: bool) -> bool:
+    """Run the in-flight gate; return True to proceed with the launch, False to abort.
+
+    Always PRINTS the check (clean or not) so it's visible — including under
+    ``--dry-run``, where it never prompts (just shows the status, then proceeds).
+    When live and interactive: ``c`` aborts, ``g`` enters anyway, ``w`` waits for
+    the signals to settle (bounded) then enters — falling back to a final g/c ask
+    if the wait times out.
+    """
+    signals = inflight_signals(root)
+    print(render_inflight(signals))
+    if signals.clean or dry_run:
+        return True
+    choice = _prompt_choice(
+        "Есть незавершённая обработка — подождать завершения [w] / войти осознанно [g] / отмена [c]? ",
+        ("w", "g", "c"),
+        default="c",
+    )
+    if choice == "c":
+        print("go: cancelled — nothing launched (work still in flight)")
+        return False
+    if choice == "g":
+        return True
+    # 'w' — wait for the other session's merge to land, bounded.
+    print("waiting for in-flight work to settle…")
+    if wait_until_settled(root):
+        print("in-flight settled — entering")
+        return True
+    print(render_inflight(inflight_signals(root)))
+    again = _prompt_choice(
+        "Still in flight after waiting — войти осознанно [g] / отмена [c]? ",
+        ("g", "c"),
+        default="c",
+    )
+    if again != "g":
+        print("go: cancelled — nothing launched (work still in flight)")
+        return False
+    return True
+
+
 # --- launch delegation -----------------------------------------------------
 
-def _launch(seed_file: Optional[str], *, dry_run: bool) -> int:
+def _launch(seed_file: Optional[str], root: Path, *, dry_run: bool) -> int:
     """Hand the resolved seed to ``tide terminal`` (the single scoped-launch path).
 
-    Builds the Namespace ``terminal.cmd_terminal`` expects and calls it directly —
-    so the scoped+skip-perms argv, the cwd, and the ``os.execvp`` exec live in ONE
-    place (``launcher.terminal``), never duplicated here. ``seed_file=None`` lets
-    terminal resolve its own default (MIGRATE.md/RESUME.md) — the ``just chat`` path.
+    First runs the in-flight gate at this single choke point (both doors funnel
+    here); if it aborts, nothing is launched. Otherwise builds the Namespace
+    ``terminal.cmd_terminal`` expects and calls it directly — so the scoped+skip-
+    perms argv, the cwd, and the ``os.execvp`` exec live in ONE place
+    (``launcher.terminal``), never duplicated here. ``seed_file=None`` lets terminal
+    resolve its own default (MIGRATE.md/RESUME.md) — the ``just chat`` path.
     """
+    if not _inflight_gate(root, dry_run=dry_run):
+        return 0
     ns = argparse.Namespace(
         seed=seed_file,
         dry_run=dry_run,
@@ -288,10 +450,16 @@ def _resolve_mode(args, dry_run: bool) -> Optional[str]:
 
 
 def _render_overview(root: Path) -> str:
-    """Both menus side by side — the dry-run, no-mode inspectable view."""
+    """Both menus + the in-flight check — the dry-run, no-mode inspectable view."""
     threads = resumable_threads(root)
     arcs = new_options(root)
-    return "\n\n".join([render_resume_menu(threads), render_new_menu(arcs, root)])
+    return "\n\n".join(
+        [
+            render_resume_menu(threads),
+            render_new_menu(arcs, root),
+            render_inflight(inflight_signals(root)),
+        ]
+    )
 
 
 def _do_resume(root: Path, args, dry_run: bool) -> int:
@@ -313,7 +481,7 @@ def _do_resume(root: Path, args, dry_run: bool) -> int:
     seed_file = seed_for_thread(root, thread, dry_run=dry_run)
     if dry_run:
         print("\nwould resume [{0}] {1} →".format(thread.kind, thread.name))
-    return _launch(seed_file, dry_run=dry_run)
+    return _launch(seed_file, root, dry_run=dry_run)
 
 
 def _do_new(root: Path, args, dry_run: bool) -> int:
@@ -330,15 +498,15 @@ def _do_new(root: Path, args, dry_run: bool) -> int:
         return 0
     n = parse_pick(raw, len(arcs), allow_zero=True)
     if n == 0:
-        seed_file = None if not dry_run else None  # terminal resolves MIGRATE.md head seed
+        # seed_file None ⇒ terminal resolves the MIGRATE.md head seed (just-chat).
         if dry_run:
             print("\nwould start [just chat] → plain head session (MIGRATE.md seed)")
-        return _launch(seed_file, dry_run=dry_run)
+        return _launch(None, root, dry_run=dry_run)
     arc = arcs[n - 1]
     seed_file = seed_for_new_arc(root, arc, dry_run=dry_run)
     if dry_run:
         print("\nwould start [new arc] {0} →".format(arc.name))
-    return _launch(seed_file, dry_run=dry_run)
+    return _launch(seed_file, root, dry_run=dry_run)
 
 
 def cmd_go(args) -> int:

@@ -213,3 +213,147 @@ def test_cli_go_new_just_chat_dry_run_uses_migrate_head(tmp_control_home, monkey
     out = capsys.readouterr().out
     assert "just chat" in out
     assert "MIGRATE.md" in out  # the plain head seed terminal resolves
+
+
+# --- in-flight gate ---------------------------------------------------------
+
+def _write_contract(arc: Path, *, state: str) -> Path:
+    """Drop a minimal ``contract.md`` in *arc* with the given ``state:`` field."""
+    path = arc / "contract.md"
+    path.write_text(
+        "# contract — x\n\nslug: x\nstate: {0}\nsign: orchestrator @ 2026-06-25\n".format(state),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _write_unmerged_delta(root: Path, name: str) -> Path:
+    """Create a CLOSED arc carrying a non-empty, unmerged ``delta.md`` (an offender)."""
+    arc = root / ".tide" / "arcs" / name  # name should be wrapped __…__
+    arc.mkdir(parents=True, exist_ok=True)
+    (arc / "delta.md").write_text(
+        "# delta — x\nmerged: no\n\nreal body to merge\n", encoding="utf-8"
+    )
+    return arc
+
+
+def test_inflight_clean_on_bare_control_home(tmp_control_home):
+    assert go.inflight_signals(tmp_control_home).clean
+
+
+def test_inflight_detects_unmerged_delta(tmp_control_home):
+    _write_unmerged_delta(tmp_control_home, "__99-old__")
+    s = go.inflight_signals(tmp_control_home)
+    assert not s.clean
+    assert "__99-old__" in s.unmerged
+
+
+def test_inflight_detects_running_contract(tmp_control_home):
+    arc = _make_arc(tmp_control_home, "01-thread")
+    _write_contract(arc, state="running")
+    s = go.inflight_signals(tmp_control_home)
+    assert not s.clean
+    assert ("01-thread", "running") in s.contracts
+
+
+def test_render_inflight_clean_and_dirty():
+    clean = go.InFlight([], [], [])
+    assert "clean" in go.render_inflight(clean)
+    dirty = go.InFlight(["__99-x__"], [("01-y", "output")], ["02-z"])
+    text = go.render_inflight(dirty)
+    assert "unmerged deltas: __99-x__" in text
+    assert "01-y [output]" in text
+    assert "drift: 02-z" in text
+
+
+def test_wait_until_settled_returns_true_when_it_clears():
+    calls = {"n": 0}
+
+    def signal_fn(_root):
+        calls["n"] += 1
+        # dirty on the first poll, clean thereafter
+        return go.InFlight([], [], []) if calls["n"] >= 2 else go.InFlight(["x"], [], [])
+
+    sleeps = []
+    ok = go.wait_until_settled(
+        Path("/tmp"), sleep_fn=sleeps.append, signal_fn=signal_fn, interval=1.0, max_wait=10.0
+    )
+    assert ok is True
+    assert sleeps == [1.0]  # slept once, then it was clean
+
+
+def test_wait_until_settled_times_out_when_never_clears():
+    sleeps = []
+    ok = go.wait_until_settled(
+        Path("/tmp"),
+        sleep_fn=sleeps.append,
+        signal_fn=lambda _r: go.InFlight(["x"], [], []),
+        interval=2.0,
+        max_wait=4.0,
+    )
+    assert ok is False
+    assert sleeps == [2.0, 2.0]  # bounded — never an unbounded block
+
+
+def test_cli_go_dry_run_overview_shows_inflight_check(tmp_control_home, monkeypatch, capsys):
+    from tide import cli
+
+    _make_arc(tmp_control_home, "01-thread")
+    _write_unmerged_delta(tmp_control_home, "__99-old__")
+    monkeypatch.chdir(tmp_control_home)
+
+    rc = cli.main(["go", "--dry-run"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "in-flight check" in out
+    assert "__99-old__" in out  # the offender is surfaced in the overview
+
+
+def test_cli_go_resume_dry_run_prints_inflight_then_launches(tmp_control_home, monkeypatch, capsys):
+    from tide import cli
+
+    arc = _make_arc(tmp_control_home, "01-thread", goal="factory")
+    _write_handoff(arc, date="2026-06-25", mode="continue", where="mid build")
+    (tmp_control_home / "MIGRATE.md").write_text("# migrate", encoding="utf-8")
+    monkeypatch.chdir(tmp_control_home)
+
+    rc = cli.main(["go", "--mode", "resume", "--pick", "1", "--dry-run"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "in-flight check: clean" in out  # gate shown under dry-run
+    assert "command:" in out               # still proceeds to the terminal dry-run
+
+
+def test_cli_go_resume_dirty_cancel_does_not_launch(tmp_control_home, monkeypatch, capsys):
+    from tide import cli
+
+    arc = _make_arc(tmp_control_home, "01-thread", goal="factory")
+    _write_handoff(arc, date="2026-06-25", mode="continue", where="mid build")
+    _write_unmerged_delta(tmp_control_home, "__99-old__")
+    (tmp_control_home / "MIGRATE.md").write_text("# migrate", encoding="utf-8")
+    monkeypatch.chdir(tmp_control_home)
+    monkeypatch.setattr("builtins.input", lambda *_a: "c")  # cancel at the gate
+
+    rc = cli.main(["go", "--mode", "resume", "--pick", "1"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "cancelled" in out
+    assert "command:" not in out  # the launch was NOT reached
+
+
+def test_cli_go_resume_dirty_go_anyway_reaches_launch(tmp_control_home, monkeypatch, capsys):
+    from tide import cli
+
+    arc = _make_arc(tmp_control_home, "01-thread", goal="factory")
+    _write_handoff(arc, date="2026-06-25", mode="continue", where="mid build")
+    _write_unmerged_delta(tmp_control_home, "__99-old__")
+    (tmp_control_home / "MIGRATE.md").write_text("# migrate", encoding="utf-8")
+    monkeypatch.chdir(tmp_control_home)
+    # 'g' enters anyway; force terminal into dry-run so no real session execs
+    monkeypatch.setattr("builtins.input", lambda *_a: "g")
+    monkeypatch.setattr(go.terminal, "cmd_terminal", lambda ns: (print("LAUNCHED") or 0))
+
+    rc = cli.main(["go", "--mode", "resume", "--pick", "1"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "LAUNCHED" in out  # gate let it through to the launch
