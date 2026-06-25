@@ -266,13 +266,36 @@ def open_entries(root: Path) -> List[Path]:
     return [e for e in entries if not slug.is_closed_entry(e.name)]
 
 
-def render_entry_summary(root: Path) -> str:
-    """A compact ``open arcs`` + ``candidates`` block for the on-entry view.
+def open_questions(root: Path) -> List[Tuple[Path, str]]:
+    """Unanswered contract asks across all open entries — ``(arc_dir, question_line)``.
 
-    Pure projection of ``.tide/arcs/`` — open entries (with their kind + goal line)
-    and the candidate backlog — kept deliberately terse so a session entering a
-    project sees *what is live here* at a glance. Empty states say ``none`` (never
-    silence). Reused by :func:`tide.launcher.context.render_enter`.
+    Each open arc may carry a ``asks/NN-slug.md`` durable open-question; an ask whose
+    ``state:`` is not ``answered`` is still waiting on the human/orchestrator. These
+    are the project's open *questions* (the third thing a session entering should
+    see, alongside open arcs and candidates). Pure read of the on-disk records.
+    """
+    from ..contract import model  # lazy: contract imports arc, avoid a cycle
+
+    out: List[Tuple[Path, str]] = []
+    for entry in open_entries(root):
+        adir = model.asks_dir(entry)
+        if not adir.is_dir():
+            continue
+        for p in sorted(adir.glob("*.md")):
+            state = (fields.read_field(p, "state") or "open").strip()
+            if state == "answered":
+                continue
+            out.append((entry, p.stem))
+    return out
+
+
+def render_entry_summary(root: Path) -> str:
+    """A compact ``open arcs`` + ``candidates`` + ``open questions`` on-entry block.
+
+    Pure projection of ``.tide/arcs/`` — open entries (with their kind + goal line),
+    the candidate backlog, and unanswered contract asks — kept deliberately terse so
+    a session entering a project sees *what is live here* at a glance. Empty states
+    say ``none`` (never silence). Reused by :func:`tide.launcher.context.render_enter`.
     """
     root = Path(root)
     lines: List[str] = []
@@ -297,6 +320,14 @@ def render_entry_summary(root: Path) -> str:
             lines.append("  {stem}  ← from {origin}".format(stem=c["stem"], origin=c["from"] or "-"))
     else:
         lines.append("candidates: none")
+
+    asks = open_questions(root)
+    if asks:
+        lines.append("open questions ({0}):".format(len(asks)))
+        for entry, stem in asks:
+            lines.append("  {stem}  (on {arc})".format(stem=stem, arc=entry.name))
+    else:
+        lines.append("open questions: none")
 
     return "\n".join(lines)
 

@@ -202,11 +202,27 @@ def test_render_enter_surfaces_open_arcs_and_candidates(tmp_project, monkeypatch
     assert "claude --strict-mcp-config" in out
     # read order present
     assert "read first" in out
-    # the on-entry work summary names the open arc + the candidate
+    # the on-entry work summary names the open arc + the candidate + questions line
     assert "open arcs (1)" in out
     assert "wire-the-thing" in out
     assert "candidates (1)" in out
     assert "a-future-idea" in out
+    assert "open questions: none" in out
+
+
+def test_render_enter_surfaces_open_questions(tmp_project, monkeypatch, capsys):
+    from tide import cli
+
+    monkeypatch.chdir(tmp_project)
+    cli.main(["arc", "new", "needs-input"])
+    cli.main(["contract", "new", "needs-input"])
+    cli.main(["contract", "ask", "needs-input", "which-database-do-we-target"])
+    capsys.readouterr()  # drain
+
+    cli.main(["context", "show"])
+    out = capsys.readouterr().out
+    assert "open questions (1)" in out
+    assert "which-database-do-we-target" in out
 
 
 def test_render_enter_surface_off_hides_summary(tmp_project, monkeypatch, capsys):

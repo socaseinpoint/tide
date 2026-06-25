@@ -161,10 +161,10 @@ strategy from `<project>/.tide/state/context.json` (every key optional):
 
 The two halves coexist in one file and never clobber each other (unknown keys
 round-trip). `context show` prints the resolved tool-context, the `read_first`
-order (missing files flagged), and a summary of **open arcs + candidates**
-computed from `.tide/arcs/` — so a session lands and the project states what to
-load, what to read, and what work is live. A legacy pre-tide `.arcs/` dir is
-noted, not summarized.
+order (missing files flagged), and a summary of **open arcs + candidates + open
+questions** (unanswered contract asks) computed from `.tide/arcs/` — so a session
+lands and the project states what to load, what to read, what work is live, and
+what is waiting on a human. A legacy pre-tide `.arcs/` dir is noted, not summarized.
 
 ```jsonc
 // .tide/state/context.json — strategy half (tool half written by chandler)
