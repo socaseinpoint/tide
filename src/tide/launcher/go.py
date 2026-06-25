@@ -38,14 +38,24 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
-from .. import fields, slug
+from .. import fields, paths, slug
 from ..adapters.base import persist_seed
 from ..arc import board
 from ..arc.stream import StreamError
-from . import seed, terminal
+from . import context, seed, terminal
 
 WORKSPACE_DIRNAME = "workspace"
 HANDOFF_GLOB = "handoff-*.md"
+
+# Role-by-place: which role `tide go` enters with, decided by the launch dir.
+# A control-home (carries roster.md) → ORCHESTRATOR + head; a plain project
+# (.tide/ but no roster) → PROJECT-MANAGER scoped to that project; --orchestrator
+# forces the head from anywhere. The env value handed to the spawned session
+# (TIDE_ROLE) is the tide CLI's own role gate — orchestrator | worker.
+ROLE_ORCHESTRATOR = "orchestrator"
+ROLE_PROJECT_MANAGER = "project-manager"
+ENV_ROLE_ORCHESTRATOR = "orchestrator"
+ENV_ROLE_WORKER = "worker"
 
 # Thread kinds (how an open arc is resumable).
 KIND_CONTINUE = "continue"  # latest handoff mode==continue → seed from the distil
@@ -66,7 +76,66 @@ WAIT_MAX_S = 60.0
 
 
 class GoError(StreamError):
-    """A dispatcher error (bad pick, empty menu). Caught by ``cli.main`` like the rest."""
+    """A dispatcher error (bad pick, empty menu, not-a-tide-dir). Caught by ``cli.main``."""
+
+
+# --- role-by-place ---------------------------------------------------------
+
+@dataclass
+class RoleDecision:
+    """Which role `tide go` enters with, the root it operates on, and why (pure).
+
+    * ``role`` — display role (``orchestrator`` | ``project-manager``).
+    * ``env_role`` — the ``TIDE_ROLE`` env value handed to the session
+      (``orchestrator`` | ``worker``).
+    * ``root`` — the dir resume/new/in-flight all operate on (control-home for the
+      head, the project itself for a project-manager).
+    * ``reason`` — the one-line "why" surfaced in ``--dry-run``.
+    """
+
+    role: str
+    env_role: str
+    root: Path
+    reason: str
+
+    @property
+    def is_orchestrator(self) -> bool:
+        return self.role == ROLE_ORCHESTRATOR
+
+
+def resolve_role(start: Path, *, force_orchestrator: bool = False) -> RoleDecision:
+    """Decide the role from the launch dir (the symmetric in-bound role pick).
+
+    ``--orchestrator`` (``force_orchestrator``) → always the head: climb to the
+    nearest control-home (``terminal.find_control_home``), role orchestrator. Else
+    look at the nearest ``.tide`` root: a control-home (``roster.md``) → orchestrator
+    + head; a plain project (``.tide`` but no roster) → project-manager scoped to
+    that project. No ``.tide`` anywhere → a clear :class:`GoError` hint.
+    """
+    tide_root = paths.find_tide_root(start)
+    if tide_root is None:
+        raise GoError(
+            "tide go: not inside a tide project — cd into a control-home or a "
+            "project (a dir with a .tide/) first, then run tide go"
+        )
+    if force_orchestrator:
+        root = terminal.find_control_home(start)
+        return RoleDecision(ROLE_ORCHESTRATOR, ENV_ROLE_ORCHESTRATOR, root, "--orchestrator forced")
+    if paths.is_control_home(tide_root):
+        return RoleDecision(
+            ROLE_ORCHESTRATOR, ENV_ROLE_ORCHESTRATOR, tide_root, "control-home detected"
+        )
+    return RoleDecision(
+        ROLE_PROJECT_MANAGER,
+        ENV_ROLE_WORKER,
+        tide_root,
+        "project {0}".format(tide_root.name),
+    )
+
+
+def render_role(d: RoleDecision) -> str:
+    """The one-line role banner shown on entry / in ``--dry-run`` (``role: X (why)``)."""
+    return "role: {0} ({1})".format(d.role, d.reason)
 
 
 # --- handoff inspection (pure-ish reads) -----------------------------------
@@ -190,10 +259,15 @@ def new_options(root: Path) -> List[Path]:
     return board.open_entries(Path(root))
 
 
-def render_new_menu(arcs: List[Path], root: Path) -> str:
-    """The numbered new-start pick-list: open arcs + the ``0) just chat`` option."""
+def render_new_menu(arcs: List[Path], root: Path, *, is_orchestrator: bool = True) -> str:
+    """The numbered new-start pick-list: open arcs + the ``0) just chat`` option.
+
+    The ``just chat`` label reflects the role: a head session for the orchestrator,
+    a project-scoped session for a project-manager.
+    """
+    chat_kind = "plain head session" if is_orchestrator else "plain project session"
     lines = ["New — start fresh:"]
-    lines.append("  0) {0} (no arc — plain head session)".format(JUST_CHAT))
+    lines.append("  0) {0} (no arc — {1})".format(JUST_CHAT, chat_kind))
     for i, arc in enumerate(arcs, start=1):
         goal = _goal_line(arc) or "(no goal set)"
         lines.append("  {0}) {1}  {2}".format(i, arc.name, goal))
@@ -224,42 +298,78 @@ def parse_pick(raw: str, count: int, *, allow_zero: bool = False) -> int:
 
 RESUME_HEADER = """# tide go — resume thread: {arc}
 
-You are re-entering the tide HEAD (coordinator) to RESUME a prior thread. Your
-standing role is in the control-home MIGRATE.md — read it first, stay light
-(coordinate, don't do project work here), then pick up the distilled thread below.
+You are re-entering tide as **{role}** to RESUME a prior thread. Your standing
+orientation is in {orient} — read it first, then pick up the distilled thread below.
+
+---
+"""
+
+# Where each role reads its standing orientation from (named in the resume seed).
+ORIENT_ORCHESTRATOR = "the control-home MIGRATE.md (stay light — coordinate, don't do project work here)"
+ORIENT_PROJECT_MANAGER = "this project's CLAUDE.md / `tide context show` (work in THIS project, isolated)"
+
+# Project-manager just-chat seed: orient the worker from the deterministic on-entry
+# triad (read-order + open arcs/candidates/questions) instead of the head MIGRATE.
+PM_SEED_HEADER = """# tide go — project session: {name}
+
+You are opening a WORKER session scoped to THIS project, isolated (TIDE_ROLE=worker).
+Orient from the on-entry view below — what to read first, and what work is open —
+then pick up. Do project work here; orchestrator-only ops are refused by role.
 
 ---
 """
 
 
-def build_resume_seed(arc_ref: str, distil_text: str) -> str:
-    """Compose a continue-thread seed: the head-role pointer + the distil (pure)."""
-    return RESUME_HEADER.format(arc=arc_ref) + distil_text.strip() + "\n"
+def build_resume_seed(arc_ref: str, distil_text: str, *, is_orchestrator: bool = True) -> str:
+    """Compose a continue-thread seed: a role-appropriate orientation pointer + distil."""
+    role = "the HEAD (coordinator)" if is_orchestrator else "this project's manager"
+    orient = ORIENT_ORCHESTRATOR if is_orchestrator else ORIENT_PROJECT_MANAGER
+    header = RESUME_HEADER.format(arc=arc_ref, role=role, orient=orient)
+    return header + distil_text.strip() + "\n"
 
 
-def seed_for_thread(root: Path, thread: Thread, *, dry_run: bool = False) -> Optional[str]:
+def project_orientation_seed(root: Path) -> str:
+    """A project-manager just-chat seed: the deterministic on-entry triad (pure-ish read)."""
+    return PM_SEED_HEADER.format(name=Path(root).name) + context.render_enter(root) + "\n"
+
+
+def seed_for_thread(
+    root: Path, thread: Thread, *, is_orchestrator: bool = True, dry_run: bool = False
+) -> Optional[str]:
     """Persist and return the seed-file path for *thread* (None ⇒ default seed).
 
-    A ``continue`` thread is seeded from its distil (wrapped with the head-role
-    pointer); a ``raw`` thread from the arc passport via :func:`seed.seed_for_project`
-    (the same orchestrator seed the menu/handoff paths build). On *dry_run* nothing
-    is written — a placeholder token is returned so the delegated terminal dry-run
-    still shows the ``@<seed-file>`` shape.
+    A ``continue`` thread is seeded from its distil (wrapped with the role-appropriate
+    orientation pointer); a ``raw`` thread from the arc passport via
+    :func:`seed.seed_for_project` — with the roster attached only for the orchestrator
+    (a project-manager session stays scoped to its own project). On *dry_run* nothing
+    is written; a placeholder token keeps the ``@<seed-file>`` shape visible.
     """
     if thread.kind == KIND_CONTINUE and thread.handoff is not None:
         distil = Path(thread.handoff).read_text(encoding="utf-8")
-        text = build_resume_seed(thread.ref, distil)
+        text = build_resume_seed(thread.ref, distil, is_orchestrator=is_orchestrator)
     else:
-        text = seed.seed_for_project(root, arc_ref=thread.ref, control_home=root)
+        text = seed.seed_for_project(
+            root,
+            arc_ref=thread.ref,
+            role=seed.ROLE_ORCHESTRATOR if is_orchestrator else seed.ROLE_WORKER,
+            control_home=root if is_orchestrator else None,
+        )
     if dry_run:
         return "<seed-file>"
     return str(persist_seed(text, "tide-go-{0}".format(slug.slugify(thread.ref) or "resume")))
 
 
-def seed_for_new_arc(root: Path, arc_dir: Path, *, dry_run: bool = False) -> str:
-    """Persist and return the seed-file path for a fresh start on *arc_dir*."""
+def seed_for_new_arc(
+    root: Path, arc_dir: Path, *, is_orchestrator: bool = True, dry_run: bool = False
+) -> str:
+    """Persist and return the seed-file path for a fresh start on *arc_dir* (role-aware)."""
     ref = slug.entry_slug(arc_dir.name)
-    text = seed.seed_for_project(root, arc_ref=ref, control_home=root)
+    text = seed.seed_for_project(
+        root,
+        arc_ref=ref,
+        role=seed.ROLE_ORCHESTRATOR if is_orchestrator else seed.ROLE_WORKER,
+        control_home=root if is_orchestrator else None,
+    )
     if dry_run:
         return "<seed-file>"
     return str(persist_seed(text, "tide-go-new-{0}".format(slug.slugify(ref) or "arc")))
@@ -407,23 +517,28 @@ def _inflight_gate(root: Path, *, dry_run: bool) -> bool:
 
 # --- launch delegation -----------------------------------------------------
 
-def _launch(seed_file: Optional[str], root: Path, *, dry_run: bool) -> int:
+def _launch(seed_file: Optional[str], decision: RoleDecision, *, dry_run: bool) -> int:
     """Hand the resolved seed to ``tide terminal`` (the single scoped-launch path).
 
     First runs the in-flight gate at this single choke point (both doors funnel
     here); if it aborts, nothing is launched. Otherwise builds the Namespace
     ``terminal.cmd_terminal`` expects and calls it directly — so the scoped+skip-
-    perms argv, the cwd, and the ``os.execvp`` exec live in ONE place
-    (``launcher.terminal``), never duplicated here. ``seed_file=None`` lets terminal
-    resolve its own default (MIGRATE.md/RESUME.md) — the ``just chat`` path.
+    perms argv, the cwd, and the exec live in ONE place (``launcher.terminal``),
+    never duplicated here. The ``root`` pins terminal to *decision.root* (so a
+    project-manager lands in its project, not the climbed-to control-home), and
+    ``tide_role`` carries the role into the spawned session's env. ``seed_file=None``
+    lets terminal resolve its own default (MIGRATE.md/RESUME.md) — the head ``just
+    chat`` path.
     """
-    if not _inflight_gate(root, dry_run=dry_run):
+    if not _inflight_gate(decision.root, dry_run=dry_run):
         return 0
     ns = argparse.Namespace(
         seed=seed_file,
         dry_run=dry_run,
         no_disable_slash=False,
         no_skip_permissions=False,
+        root=str(decision.root),
+        tide_role=decision.env_role,
     )
     return terminal.cmd_terminal(ns)
 
@@ -449,21 +564,24 @@ def _resolve_mode(args, dry_run: bool) -> Optional[str]:
     return "resume" if ans.startswith("r") else "new"
 
 
-def _render_overview(root: Path) -> str:
-    """Both menus + the in-flight check — the dry-run, no-mode inspectable view."""
+def _render_overview(decision: RoleDecision) -> str:
+    """Both menus + the in-flight check — the dry-run inspectable view (role banner
+    is printed by :func:`cmd_go` just above this)."""
+    root = decision.root
     threads = resumable_threads(root)
     arcs = new_options(root)
     return "\n\n".join(
         [
             render_resume_menu(threads),
-            render_new_menu(arcs, root),
+            render_new_menu(arcs, root, is_orchestrator=decision.is_orchestrator),
             render_inflight(inflight_signals(root)),
         ]
     )
 
 
-def _do_resume(root: Path, args, dry_run: bool) -> int:
-    """Resume flow: list threads, pick one, seed from it, delegate to terminal."""
+def _do_resume(decision: RoleDecision, args, dry_run: bool) -> int:
+    """Resume flow: list threads, pick one, seed from it (role-aware), delegate."""
+    root = decision.root
     threads = resumable_threads(root)
     print(render_resume_menu(threads))
     if not threads:
@@ -478,16 +596,19 @@ def _do_resume(root: Path, args, dry_run: bool) -> int:
         return 0
     n = parse_pick(raw, len(threads))
     thread = threads[n - 1]
-    seed_file = seed_for_thread(root, thread, dry_run=dry_run)
+    seed_file = seed_for_thread(
+        root, thread, is_orchestrator=decision.is_orchestrator, dry_run=dry_run
+    )
     if dry_run:
         print("\nwould resume [{0}] {1} →".format(thread.kind, thread.name))
-    return _launch(seed_file, root, dry_run=dry_run)
+    return _launch(seed_file, decision, dry_run=dry_run)
 
 
-def _do_new(root: Path, args, dry_run: bool) -> int:
-    """New flow: list open arcs + just-chat, pick one, seed it, delegate to terminal."""
+def _do_new(decision: RoleDecision, args, dry_run: bool) -> int:
+    """New flow: list open arcs + just-chat, pick one, seed it (role-aware), delegate."""
+    root = decision.root
     arcs = new_options(root)
-    print(render_new_menu(arcs, root))
+    print(render_new_menu(arcs, root, is_orchestrator=decision.is_orchestrator))
     raw = getattr(args, "pick", None)
     if not raw and not dry_run:
         try:
@@ -498,30 +619,47 @@ def _do_new(root: Path, args, dry_run: bool) -> int:
         return 0
     n = parse_pick(raw, len(arcs), allow_zero=True)
     if n == 0:
-        # seed_file None ⇒ terminal resolves the MIGRATE.md head seed (just-chat).
+        # just-chat: orchestrator ⇒ seed None (terminal resolves the MIGRATE.md head);
+        # project-manager ⇒ the project on-entry triad seed (no head MIGRATE).
+        if decision.is_orchestrator:
+            seed_file: Optional[str] = None
+            chat_desc = "plain head session (MIGRATE.md seed)"
+        else:
+            seed_file = "<seed-file>" if dry_run else str(
+                persist_seed(project_orientation_seed(root), "tide-go-pm-{0}".format(root.name))
+            )
+            chat_desc = "plain project session (tide context show triad)"
         if dry_run:
-            print("\nwould start [just chat] → plain head session (MIGRATE.md seed)")
-        return _launch(None, root, dry_run=dry_run)
+            print("\nwould start [just chat] → {0}".format(chat_desc))
+        return _launch(seed_file, decision, dry_run=dry_run)
     arc = arcs[n - 1]
-    seed_file = seed_for_new_arc(root, arc, dry_run=dry_run)
+    seed_file = seed_for_new_arc(
+        root, arc, is_orchestrator=decision.is_orchestrator, dry_run=dry_run
+    )
     if dry_run:
         print("\nwould start [new arc] {0} →".format(arc.name))
-    return _launch(seed_file, root, dry_run=dry_run)
+    return _launch(seed_file, decision, dry_run=dry_run)
 
 
 def cmd_go(args) -> int:
-    """``tide go`` — light entry dispatcher: resume a prior thread or start new."""
-    root = terminal.find_control_home()
+    """``tide go`` — light entry dispatcher: role-by-place, then resume or start new.
+
+    Resolves the role from the launch dir first (``--orchestrator`` forces the head),
+    prints the role banner, then runs the chosen door. Every door funnels through the
+    in-flight gate + ``tide terminal`` (one launch path).
+    """
+    decision = resolve_role(Path.cwd(), force_orchestrator=bool(getattr(args, "orchestrator", False)))
+    print(render_role(decision))
     dry_run = bool(getattr(args, "dry_run", False))
     mode = _resolve_mode(args, dry_run)
 
     if mode is None:  # dry-run, no mode → print the overview, exec nothing
-        print(_render_overview(root))
+        print(_render_overview(decision))
         return 0
     if mode == "resume":
-        return _do_resume(root, args, dry_run)
+        return _do_resume(decision, args, dry_run)
     if mode == "new":
-        return _do_new(root, args, dry_run)
+        return _do_new(decision, args, dry_run)
     raise GoError("go: unknown mode {0!r} (want resume|new)".format(mode))
 
 
@@ -530,6 +668,12 @@ def register(subparsers) -> None:
     p = subparsers.add_parser(
         "go",
         help="light entry dispatcher: resume a prior thread or start new (mirror of handoff)",
+    )
+    p.add_argument(
+        "-O",
+        "--orchestrator",
+        action="store_true",
+        help="force the orchestrator (head) role from ANY directory (ignore role-by-place)",
     )
     p.add_argument(
         "--mode",

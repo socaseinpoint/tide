@@ -145,7 +145,8 @@ def cmd_terminal(args) -> int:
     and returns without exec'ing — the only way to inspect the launch from inside a
     subagent or a test without nesting a live session.
     """
-    root = find_control_home()
+    root_override = getattr(args, "root", None)
+    root = Path(root_override) if root_override else find_control_home()
     seed_file = resolve_seed_file(root, getattr(args, "seed", None))
     profile = context.load_profile(root)
     disable_slash = not getattr(args, "no_disable_slash", False)
@@ -154,10 +155,16 @@ def cmd_terminal(args) -> int:
         seed_file, profile, disable_slash=disable_slash, skip_permissions=skip_permissions
     )
 
+    # Optional TIDE_ROLE for the spawned session (set by `tide go`'s role-by-place
+    # resolution). Carried into the exec env ONLY — never mutates this process's env.
+    tide_role = getattr(args, "tide_role", None)
+
     if getattr(args, "dry_run", False):
         print("tide terminal — clean logged-in seeded session (dry run, not exec'd)")
         print("  cwd:     {0}".format(root))
         print("  seed:    {0}".format(seed_file))
+        if tide_role:
+            print("  TIDE_ROLE: {0}".format(tide_role))
         print("  command: {0}".format(" ".join(command)))
         print("  auth:    kept — no --bare, so ~/.claude.json (OAuth) loads")
         skip_state = "on" if skip_permissions else "off"
@@ -168,11 +175,18 @@ def cmd_terminal(args) -> int:
         print("  {0}".format(CLAUDE_MD_GAP))
         return 0
 
-    # Replace this process with the clean session in the SAME terminal. os.execvp
-    # does not return on success; the cwd is set first so the session lands at root.
+    # Replace this process with the clean session in the SAME terminal. exec does not
+    # return on success; the cwd is set first so the session lands at root. When a
+    # TIDE_ROLE is requested we exec with a COPIED env (execvpe) so the role reaches
+    # the session without ever mutating this (about-to-be-replaced) process's environ.
     os.chdir(root)
-    os.execvp(SESSION_PROGRAM, command)
-    return 0  # pragma: no cover — unreachable once execvp succeeds
+    if tide_role:
+        env = dict(os.environ)
+        env["TIDE_ROLE"] = tide_role
+        os.execvpe(SESSION_PROGRAM, command, env)
+    else:
+        os.execvp(SESSION_PROGRAM, command)
+    return 0  # pragma: no cover — unreachable once exec succeeds
 
 
 def register(subparsers) -> None:
