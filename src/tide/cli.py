@@ -134,6 +134,24 @@ def _register_menu(sub) -> None:
     register_menu(sub)
 
 
+def _register_context(sub) -> None:
+    # U13: per-project launch context profile — show the resolved scoped command
+    # (strict MCP scoping; lean default loads no global MCP servers).
+    from .launcher.context import register as register_context
+
+    register_context(sub)
+
+
+def _register_terminal(sub) -> None:
+    # tide terminal — native absorption of ~/.local/bin/tide-go: exec a clean,
+    # logged-in, seeded claude session IN the current terminal (os.execvp, no
+    # spawn). Reuses the scoped builder; adds --disable-slash-commands; never
+    # --bare (that would drop OAuth auth living in ~/.claude.json).
+    from .launcher.terminal import register as register_terminal
+
+    register_terminal(sub)
+
+
 def _register_handoff(sub) -> None:
     # U12: warm-handoff (`tide handoff <arc>`) — distil chat → arc workspace, remind
     # candidates, fork continue|new|close, auto-spawn a fresh session (toggle ON).
@@ -141,6 +159,15 @@ def _register_handoff(sub) -> None:
     from .launcher.handoff import register as register_handoff
 
     register_handoff(sub)
+
+
+def _register_verify(sub) -> None:
+    # F7: isolated verification affordance — stage a built artifact into a temp dir,
+    # serve it on an OS-assigned ephemeral port, and check it (HTTP 200 + optional
+    # node inline-script syntax smoke). stdlib-only; no fixed-port collisions.
+    from .verify import register as register_verify
+
+    register_verify(sub)
 
 
 def _register_arc(sub) -> None:
@@ -220,7 +247,10 @@ def build_parser() -> argparse.ArgumentParser:
     _register_install_hooks(subparsers)
     _register_roster(subparsers)
     _register_menu(subparsers)
+    _register_context(subparsers)
+    _register_terminal(subparsers)
     _register_handoff(subparsers)
+    _register_verify(subparsers)
 
     _register_version(subparsers)
     _register_help(subparsers)
