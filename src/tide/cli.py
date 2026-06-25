@@ -152,6 +152,16 @@ def _register_terminal(sub) -> None:
     register_terminal(sub)
 
 
+def _register_go(sub) -> None:
+    # tide go — the light ENTRY dispatcher (symmetric mirror of `tide handoff`, the
+    # exit). Asks "resume prior work or start new?", resolves a seed, and delegates
+    # the launch to `tide terminal` (the single scoped+skip-perms in-place path).
+    # ~/.local/bin/tide-go is a thin alias onto this, preserving the loved name.
+    from .launcher.go import register as register_go
+
+    register_go(sub)
+
+
 def _register_handoff(sub) -> None:
     # U12: warm-handoff (`tide handoff <arc>`) — distil chat → arc workspace, remind
     # candidates, fork continue|new|close, auto-spawn a fresh session (toggle ON).
@@ -249,6 +259,7 @@ def build_parser() -> argparse.ArgumentParser:
     _register_menu(subparsers)
     _register_context(subparsers)
     _register_terminal(subparsers)
+    _register_go(subparsers)
     _register_handoff(subparsers)
     _register_verify(subparsers)
 
