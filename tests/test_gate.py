@@ -492,3 +492,130 @@ def test_cannon_gate_cli_is_registered(in_project, capsys):
     with pytest.raises(SystemExit) as exc:
         main(["cannon", "gate", "--help"])
     assert exc.value.code == 0
+
+
+# ---------------------------------------------------------------------------
+# Standing reality↔canon baseline (G2): prose-staleness independent of arcs
+# ---------------------------------------------------------------------------
+
+def test_gate_standing_reality_drift(tmp_project):
+    """Baseline stamped, then a covered signature moves → standing prose-stale (1)."""
+    from tide.cannon import reality
+
+    _write_state_covers(tmp_project, ["*.py"])
+    f = tmp_project / "mod.py"
+    f.write_text("def foo():\n    return 1\n", encoding="utf-8")
+    reality.stamp_canon_baseline(tmp_project)  # baseline == current reality
+
+    code, _ = gate.decide(tmp_project)
+    assert code == 0  # freshly baselined → no standing drift
+
+    # An API-surface change (new signature) moves reality past the baseline.
+    f.write_text("def foo():\n    return 1\n\ndef bar():\n    return 2\n", encoding="utf-8")
+    code, reasons = gate.decide(tmp_project)
+    assert code == 1
+    assert any("canon prose may be stale" in r for r in reasons)
+
+
+def test_gate_no_standing_drift_on_body_only_edit(tmp_project):
+    """A body-only edit keeps the API surface → no standing drift (deliberate)."""
+    from tide.cannon import reality
+
+    _write_state_covers(tmp_project, ["*.py"])
+    f = tmp_project / "mod.py"
+    f.write_text("def foo():\n    return 1\n", encoding="utf-8")
+    reality.stamp_canon_baseline(tmp_project)
+
+    f.write_text("def foo():\n    return 999  # body churn only\n", encoding="utf-8")
+    code, reasons = gate.decide(tmp_project)
+    assert code == 0, reasons
+
+
+def test_gate_no_standing_drift_without_baseline(tmp_project):
+    """Manifest but no baseline (legacy canon) → standing clause stays silent."""
+    _write_state_covers(tmp_project, ["*.py"])
+    (tmp_project / "mod.py").write_text("def foo():\n    return 1\n", encoding="utf-8")
+    # default CANON (no journal, no baseline) → only the standing clause is at issue
+    code, reasons = gate.decide(tmp_project)
+    assert not any("canon prose may be stale" in r for r in reasons)
+
+
+def test_gate_lint_missing_baseline(tmp_project):
+    """Maintained canon + manifest but no baseline → c5 lint surfaces it."""
+    _filled_canon(tmp_project)
+    _write_state_covers(tmp_project, ["*.py"])
+    (tmp_project / "mod.py").write_text("def foo():\n    return 1\n", encoding="utf-8")
+    issues = gate.cannon_lint(tmp_project)
+    assert any("missing reality-rev baseline" in i for i in issues)
+
+
+def test_gate_lint_baseline_present_clears_c5(tmp_project):
+    from tide.cannon import reality
+
+    _filled_canon(tmp_project)
+    _write_state_covers(tmp_project, ["*.py"])
+    (tmp_project / "mod.py").write_text("def foo():\n    return 1\n", encoding="utf-8")
+    reality.stamp_canon_baseline(tmp_project)
+    issues = gate.cannon_lint(tmp_project)
+    assert not any("missing reality-rev baseline" in i for i in issues)
+
+
+def test_gate_clean_after_close_chain_with_manifest(tmp_project):
+    """Risk #1: open→delta→merge→close WITH a covers manifest leaves the gate clean.
+
+    contract.close merges the delta (which now stamps the reality baseline + bumps
+    cannon-rev) and re-stamps the post-merge rev onto the sealed arc. The standing
+    baseline equals current reality and the authoring arc is closed → no churn loop.
+    """
+    from tide.contract import lifecycle
+    from tide.contract import model
+    from tide.cannon import reality
+
+    _filled_canon(tmp_project)
+    _write_state_covers(tmp_project, ["*.py"])
+    (tmp_project / "mod.py").write_text("def foo():\n    return 1\n", encoding="utf-8")
+    reality.stamp_canon_baseline(tmp_project)  # pre-existing maintained canon is baselined
+
+    entry = stream.new_arc(tmp_project, "work")
+    lifecycle.new(tmp_project, "work", goal="do the work", criteria="it works")
+    lifecycle.sign(tmp_project, "work")
+    lifecycle.report(tmp_project, "work", body="did the work")
+    lifecycle.proof(tmp_project, "work", body="here is the evidence")
+    lifecycle.accept(tmp_project, "work")
+    _write_delta(entry, "the durable truth of this arc")
+    strip_placeholders(entry / "arc.md", model.contract_path(entry))
+
+    lifecycle.close(tmp_project, "work")
+
+    code, reasons = gate.decide(tmp_project)
+    assert code == 0, reasons
+    # the baseline now equals the post-close reality (no standing drift)
+    assert reality.parse_baseline(tmp_project) == reality.reality_rev(tmp_project)
+
+
+def test_gate_no_self_drift_when_canon_covers_matches_canon_itself(tmp_project):
+    """FOOTGUN: a ``canon-covers`` glob that matches CANON.md itself (e.g. ``**/*.md``)
+    must NOT create a false standing-drift loop — CANON.md is excluded from its own
+    reality fingerprint, so stamping the baseline at merge never re-trips the gate.
+    """
+    from tide.cannon import reality
+
+    _filled_canon(tmp_project)
+    _write_state_covers(tmp_project, ["**/*.md"])  # matches CANON.md + every other .md
+    (tmp_project / "notes.md").write_text("hello\n", encoding="utf-8")
+
+    arc_dir = paths.arcs_dir(tmp_project) / "01-x"
+    arc_dir.mkdir(parents=True, exist_ok=True)
+    _write_delta(arc_dir, "did the work")
+    merge.merge_delta(tmp_project, arc_dir, slug="x", date="2026-06-25")
+
+    # The baseline was stamped INTO CANON.md by the merge; the gate must stay clean
+    # (no prose-stale loop) because CANON.md is not part of its own fingerprint.
+    code, reasons = gate.decide(tmp_project)
+    assert code == 0, reasons
+    assert not any("canon prose may be stale" in r for r in reasons)
+
+    # Idempotent re-stamp at the same reality → no churn.
+    rr = reality.parse_baseline(tmp_project)
+    reality.stamp_canon_baseline(tmp_project)
+    assert reality.parse_baseline(tmp_project) == rr

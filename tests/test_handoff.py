@@ -209,3 +209,72 @@ def test_cli_handoff_summary_file(tmp_project, monkeypatch, tmp_path):
     ws = handoff.resolve_open_entry(tmp_project, "ship-it") / "workspace"
     written = next(p for p in ws.iterdir() if p.name.startswith("handoff-"))
     assert written.read_text(encoding="utf-8") == "# prepared distil\n"
+
+
+# --- arc-worktree cwd + cross-project resolution ---------------------------
+
+def _spawn_blob(res) -> str:
+    """Flatten a dry-run SpawnResult's built commands into one searchable string."""
+    return " ".join(" ".join(c) for c in (res.spawn.commands or []))
+
+
+def test_run_handoff_continue_lands_in_arc_worktree_cwd(tmp_project):
+    from tide.adapters.orca_worktree import WORKSPACE_FIELD
+    from tide.arc import worktree
+
+    arc = stream.new_arc(tmp_project, "ship-it")
+    ws = tmp_project / "orca-ws"
+    ws.mkdir()
+    from tide import fields
+    fields.set_field(worktree._passport(arc), WORKSPACE_FIELD, str(ws))
+
+    res = handoff.run_handoff(tmp_project, arc_ref="ship-it", mode="continue", dry_run=True)
+    # the spawn cwd reflects the arc's orca workspace, not the bare project root
+    assert str(ws) in _spawn_blob(res)
+
+
+def test_run_handoff_new_mode_uses_root_cwd(tmp_project):
+    arc = stream.new_arc(tmp_project, "ship-it")
+    from tide.adapters.orca_worktree import WORKSPACE_FIELD
+    from tide.arc import worktree
+    from tide import fields
+
+    ws = tmp_project / "orca-ws"
+    ws.mkdir()
+    fields.set_field(worktree._passport(arc), WORKSPACE_FIELD, str(ws))
+
+    res = handoff.run_handoff(tmp_project, arc_ref="ship-it", mode="new", dry_run=True)
+    blob = _spawn_blob(res)
+    # new mode seeds a project-level orchestrator at the root — never the arc worktree
+    assert str(ws) not in blob
+    assert str(tmp_project.resolve()) in blob
+
+
+def test_run_handoff_cross_project_writes_into_owning_project(tmp_control_home, tmp_path):
+    from tide import roster
+    from tests.conftest import build_tide_skeleton
+
+    from tide import fields
+    from tide.adapters.orca_worktree import WORKSPACE_FIELD
+    from tide.arc import worktree
+
+    proj = tmp_path / "owner-proj"
+    proj.mkdir()
+    build_tide_skeleton(proj, name="owner")
+    arc = stream.new_arc(proj, "remote-thread")
+    # Record the arc's worktree so the cross-project spawn cwd resolves to it.
+    ws = proj / "orca-ws"
+    ws.mkdir()
+    fields.set_field(worktree._passport(arc), WORKSPACE_FIELD, str(ws))
+    roster.add(tmp_control_home, "owner", str(proj))
+
+    # Fired from the control-home; the distil must land in the OWNING project's arc.
+    res = handoff.run_handoff(
+        tmp_control_home, arc_ref="remote-thread", mode="continue", dry_run=True
+    )
+    assert str(proj) in str(res.summary_path)
+    assert res.summary_path.parent.name == handoff.WORKSPACE_DIRNAME
+    assert res.summary_path.exists()
+    # the cross-project spawn cwd is the OWNING project's arc worktree, not the
+    # control-home root (mirrors the same-project worktree-cwd assertion)
+    assert str(ws) in _spawn_blob(res)

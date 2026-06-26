@@ -210,6 +210,27 @@ def orca_work(root: Path, arc_dir: Path) -> str:
     return workspace
 
 
+# --- activate existing workspace (re-entry focus) ---------------------------
+
+def activate_workspace(arc_dir: Path) -> bool:
+    """Focus the arc's existing Orca workspace via ``orca worktree set --activate``.
+
+    A best-effort re-entry side-effect: when an arc already has an Orca worktree
+    (its passport records a ``worktree-branch``) and Orca is running, this brings
+    that workspace to the front so resuming the arc lands in the right place.
+    Returns ``False`` (a clean no-op) when no branch is recorded or Orca is
+    unavailable — never raises, so a failed focus can never block entry.
+    """
+    branch = fields.read_field(passport_path(arc_dir), _WORKTREE_BRANCH_FIELD)
+    if not branch or not orca_available():
+        return False
+    _run_orca(
+        ["worktree", "set", "--worktree", "branch:{0}".format(branch), "--activate"],
+        check=False,
+    )
+    return True
+
+
 # --- gh-first land ----------------------------------------------------------
 
 def _commits_ahead(root: Path, base: str, branch: str) -> bool:

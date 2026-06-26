@@ -361,3 +361,95 @@ class TestHasWorktree:
         worktree.land(git_project, arc)
         worktree.remove(git_project, arc)
         assert worktree.has_worktree(git_project, arc) is False
+
+
+# ---------------------------------------------------------------------------
+# resolve_cwd (re-entry cwd: orca-workspace > git worktree > root)
+# ---------------------------------------------------------------------------
+
+class TestResolveCwd:
+    def test_resolve_cwd_none_arc_returns_root(self, tmp_project):
+        assert worktree.resolve_cwd(tmp_project, None) == tmp_project
+
+    def test_resolve_cwd_falls_back_to_root(self, tmp_project):
+        arc = stream.new_arc(tmp_project, "no-wt")
+        assert worktree.resolve_cwd(tmp_project, arc) == tmp_project
+
+    def test_resolve_cwd_prefers_orca_workspace(self, tmp_project):
+        from tide.adapters.orca_worktree import WORKSPACE_FIELD
+
+        arc = stream.new_arc(tmp_project, "has-orca")
+        ws = tmp_project / "orca-ws"
+        ws.mkdir()
+        fields.set_field(worktree._passport(arc), WORKSPACE_FIELD, str(ws))
+        assert worktree.resolve_cwd(tmp_project, arc) == ws
+
+    def test_resolve_cwd_ignores_stale_orca_workspace(self, tmp_project):
+        """A recorded orca-workspace that no longer exists must fall through, not crash."""
+        from tide.adapters.orca_worktree import WORKSPACE_FIELD
+
+        arc = stream.new_arc(tmp_project, "stale-orca")
+        fields.set_field(
+            worktree._passport(arc), WORKSPACE_FIELD, str(tmp_project / "gone")
+        )
+        assert worktree.resolve_cwd(tmp_project, arc) == tmp_project
+
+    def test_resolve_cwd_falls_back_to_git_worktree(self, git_project):
+        arc = stream.new_arc(git_project, "wt-arc")
+        wt = worktree.create(git_project, arc)
+        assert wt is not None and wt.exists()
+        assert worktree.resolve_cwd(git_project, arc) == wt
+
+    def test_resolve_cwd_orca_workspace_beats_git_worktree(self, git_project):
+        from tide.adapters.orca_worktree import WORKSPACE_FIELD
+
+        arc = stream.new_arc(git_project, "both")
+        worktree.create(git_project, arc)  # makes a real git worktree
+        ws = git_project / "orca-ws"
+        ws.mkdir()
+        fields.set_field(worktree._passport(arc), WORKSPACE_FIELD, str(ws))
+        assert worktree.resolve_cwd(git_project, arc) == ws
+
+
+# ---------------------------------------------------------------------------
+# resolve_project_and_arc (cross-project: cwd-project first, then roster)
+# ---------------------------------------------------------------------------
+
+class TestResolveProjectAndArc:
+    def test_resolves_arc_in_same_project(self, tmp_project):
+        arc = stream.new_arc(tmp_project, "local")
+        owner, entry = worktree.resolve_project_and_arc(tmp_project, "local")
+        assert owner == tmp_project
+        assert entry == arc
+
+    def test_no_match_returns_root_and_none(self, tmp_project):
+        owner, entry = worktree.resolve_project_and_arc(tmp_project, "ghost")
+        assert owner == tmp_project
+        assert entry is None
+
+    def test_resolves_arc_in_roster_project(self, tmp_control_home, tmp_path):
+        from tide import roster
+        from tests.conftest import build_tide_skeleton
+
+        # A separate registered project that owns the arc.
+        proj = tmp_path / "other-proj"
+        proj.mkdir()
+        build_tide_skeleton(proj, name="other")
+        arc = stream.new_arc(proj, "remote-arc")
+        roster.add(tmp_control_home, "other", str(proj))
+
+        owner, entry = worktree.resolve_project_and_arc(tmp_control_home, "remote-arc")
+        assert owner == proj
+        assert entry == arc
+
+    def test_does_not_walk_roster_from_plain_project(self, tmp_project, tmp_path):
+        # A plain project (no roster.md) never reaches into other projects.
+        proj = tmp_path / "elsewhere"
+        proj.mkdir()
+        from tests.conftest import build_tide_skeleton
+
+        build_tide_skeleton(proj, name="elsewhere")
+        stream.new_arc(proj, "remote-arc")
+        owner, entry = worktree.resolve_project_and_arc(tmp_project, "remote-arc")
+        assert owner == tmp_project
+        assert entry is None

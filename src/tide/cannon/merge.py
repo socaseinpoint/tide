@@ -304,6 +304,18 @@ def merge_delta(
     canon.write_text(merged, encoding="utf-8")
 
     mark_merged(delta_path, date=date)
+
+    # Reconcile prose↔reality at the single serialization point: stamp the current
+    # reality-rev into CANON.md's preamble so the gate has a standing baseline to
+    # diff. A no-op when the project has no canon-covers manifest. Stamped LAST (after
+    # mark_merged) so the baseline captures the FINAL post-merge state of every
+    # covered file — otherwise a manifest covering delta.md (e.g. ``**/*.md``) would
+    # see it flip ``merged: no→yes`` after the stamp and falsely report standing
+    # drift. The baseline line is part of CANON.md, so rev.compute below hashes it
+    # into the bumped cannon-rev.
+    from . import reality as _reality
+    _reality.stamp_canon_baseline(root)
+
     return rev.compute(root)
 
 

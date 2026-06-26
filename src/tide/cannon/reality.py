@@ -73,6 +73,13 @@ EXCLUDE_MARKER = "canon-covers-exclude:"
 COVERS_STATE_FILE = "canon-covers"
 EXCLUDE_STATE_FILE = "canon-covers-exclude"
 
+# Standing reality↔canon baseline: a SCALAR ``reality-rev: <rev>`` line in the
+# CANON.md preamble, stamped at every merge (the moment prose was last reconciled
+# with reality). Deliberately a non-bare ``key: value`` line so the block parser
+# (which treats a BARE ``canon-covers:`` line as a glob-block start) never mistakes
+# it for a manifest block — see :func:`_parse_canon_block`.
+BASELINE_MARKER = "reality-rev:"
+
 # File extensions treated as CODE — these get an API-surface fingerprint instead
 # of a full-content hash. Everything else (docs, config, data) falls back to a
 # full-content hash so it is still tracked verbatim.
@@ -281,7 +288,17 @@ def _covered_paths(root: Path, covers: List[str], exclude: List[str]) -> Set[str
     else:
         covered = _glob_files(Path(root), covers)
         excluded = _glob_files(Path(root), exclude)
-    return covered - excluded
+    result = covered - excluded
+
+    # Never let CANON.md be part of its OWN reality fingerprint: stamping the
+    # standing baseline (:func:`stamp_canon_baseline`) mutates CANON.md, so a
+    # canon-covers glob that happens to match it (e.g. ``**/*.md``) would otherwise
+    # bump reality-rev on every merge → a permanent false standing-drift loop.
+    try:
+        result.discard(str(paths.canon_file(Path(root)).relative_to(Path(root))))
+    except ValueError:
+        pass
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -326,6 +343,79 @@ def reality_rev(root: Path) -> Optional[str]:
 # ---------------------------------------------------------------------------
 # Passport stamp
 # ---------------------------------------------------------------------------
+
+def parse_baseline(root: Path) -> Optional[str]:
+    """Read the scalar ``reality-rev: <rev>`` baseline from CANON.md's preamble.
+
+    Scans only the preamble (everything before the first ``## `` heading) so a
+    journal line that happens to mention the marker can never be mistaken for the
+    baseline. Returns ``None`` when CANON.md is absent or carries no baseline
+    (legacy / un-stamped canon) — graceful degradation, never an error.
+    """
+    canon = paths.canon_file(Path(root))
+    if not canon.is_file():
+        return None
+    for line in canon.read_text(encoding="utf-8").splitlines():
+        if line.startswith("## "):
+            break  # end of preamble
+        stripped = line.strip()
+        if stripped.startswith(BASELINE_MARKER):
+            value = stripped[len(BASELINE_MARKER):].strip()
+            return value or None
+    return None
+
+
+def _set_preamble_baseline(text: str, rev: str) -> str:
+    """Return *text* with a single ``reality-rev: <rev>`` line in its preamble.
+
+    Replaces an existing baseline line in place; otherwise inserts one at the END
+    of the preamble (after the last non-blank preamble line, before the first
+    ``## `` section). Idempotent re-stamp: a re-run with the same rev is a no-op.
+    Preserves the original trailing newline.
+    """
+    new_line = "{0} {1}".format(BASELINE_MARKER, rev)
+    lines = text.splitlines()
+
+    end = len(lines)
+    for i, line in enumerate(lines):
+        if line.startswith("## "):
+            end = i
+            break
+
+    for i in range(end):
+        if lines[i].strip().startswith(BASELINE_MARKER):
+            lines[i] = new_line
+            out = "\n".join(lines)
+            return out + "\n" if text.endswith("\n") else out
+
+    insert_at = end
+    while insert_at > 0 and lines[insert_at - 1].strip() == "":
+        insert_at -= 1
+    lines.insert(insert_at, new_line)
+    out = "\n".join(lines)
+    return out + "\n" if text.endswith("\n") else out
+
+
+def stamp_canon_baseline(root: Path) -> Optional[str]:
+    """Write the current reality-rev into CANON.md's preamble as the standing baseline.
+
+    Returns the stamped rev, or ``None`` (a clean no-op) when the project has no
+    ``canon-covers:`` manifest (``reality_rev`` is ``None``) or CANON.md is missing
+    — so a project with no reality axis is simply never baselined. Idempotent: a
+    re-stamp at the same rev leaves the file byte-identical.
+    """
+    rr = reality_rev(Path(root))
+    if rr is None:
+        return None
+    canon = paths.canon_file(Path(root))
+    if not canon.is_file():
+        return None
+    text = canon.read_text(encoding="utf-8")
+    new_text = _set_preamble_baseline(text, rr)
+    if new_text != text:
+        canon.write_text(new_text, encoding="utf-8")
+    return rr
+
 
 def stamp_reality_rev(passport_doc: Path, root: Path) -> Optional[str]:
     """Stamp the current ``reality-rev`` into *passport_doc* and return it.

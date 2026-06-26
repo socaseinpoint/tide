@@ -207,6 +207,17 @@ def read_autospawn(root: Path) -> bool:
     return autospawn_enabled(_read_settings(root))
 
 
+# --- orca workspace focus (best-effort) -------------------------------------
+
+def _maybe_activate_orca(arc_dir: Path) -> bool:
+    """Best-effort focus of the arc's Orca workspace (never raises / blocks entry)."""
+    try:
+        from ..adapters import orca_worktree
+        return orca_worktree.activate_workspace(Path(arc_dir))
+    except Exception:  # noqa: BLE001  a failed focus must never block the handoff
+        return False
+
+
 # --- orchestration ----------------------------------------------------------
 
 @dataclass
@@ -258,12 +269,18 @@ def run_handoff(
             )
         )
 
+    # Resolve which project owns the arc (cwd-project first, then the roster) so a
+    # handoff fired from the control-home anchors to the RIGHT project's arc, and
+    # the distil lands in that project's arc workspace — not the control-home root.
+    from ..arc import worktree
+    owner_root, arc_entry = worktree.resolve_project_and_arc(root, arc_ref)
+
     text = summary if summary is not None else build_summary(
         mode=mode, arc_ref=arc_ref, date=date
     )
-    summary_path = write_summary(root, arc_ref, text, date=date)
+    summary_path = write_summary(owner_root, arc_ref, text, date=date)
 
-    effective_spawn = read_autospawn(root) if autospawn is None else bool(autospawn)
+    effective_spawn = read_autospawn(owner_root) if autospawn is None else bool(autospawn)
     result = HandoffResult(
         mode=mode,
         summary_path=summary_path,
@@ -283,18 +300,28 @@ def run_handoff(
         )
         return result
 
-    # continue seeds THIS arc; new seeds a project-level orchestrator (pick a candidate).
+    # continue seeds THIS arc in its OWNING project (land in its worktree); new seeds
+    # a project-level orchestrator at the control-home (pick a candidate, no arc).
     spawn_arc = arc_ref if mode == FORK_CONTINUE else None
-    control_home = root if paths.is_control_home(root) else None
+    seed_root = owner_root if mode == FORK_CONTINUE else root
+    control_home = seed_root if paths.is_control_home(seed_root) else None
     seed_text = seed.seed_for_project(
-        root, arc_ref=spawn_arc, role=seed.ROLE_ORCHESTRATOR, control_home=control_home
+        seed_root, arc_ref=spawn_arc, role=seed.ROLE_ORCHESTRATOR, control_home=control_home
     )
     adapter = get_adapter(adapter_name)
     title = "tide-handoff-{0}".format(slug.slugify(arc_ref) or "session")
     seed_file = "<seed-file>" if dry_run else str(persist_seed(seed_text, title))
-    command = context.build_launch_command(seed_file, context.load_profile(root))
+    command = context.build_launch_command(seed_file, context.load_profile(seed_root))
+
+    if mode == FORK_CONTINUE:
+        spawn_cwd = worktree.resolve_cwd(owner_root, arc_entry)
+        if not dry_run and arc_entry is not None:
+            _maybe_activate_orca(arc_entry)
+    else:
+        spawn_cwd = root.resolve()
+
     result.spawn = adapter.spawn(
-        command=command, cwd=str(root.resolve()), title=title, dry_run=dry_run
+        command=command, cwd=str(spawn_cwd), title=title, dry_run=dry_run
     )
     result.notes.append(
         "{0}: {1}".format(

@@ -320,3 +320,33 @@ def test_normalize_preserves_unique_journal_entries():
     assert healed.count("### 2026-06-02 · b") == 1
     assert "body-a" in healed
     assert "body-b" in healed
+
+
+# --- reality baseline stamped at merge (G2) ---------------------------------
+
+def test_merge_stamps_reality_baseline(tmp_path):
+    from tide.cannon import reality
+
+    store.init(tmp_path, name="demo")
+    # Declare a manifest so reality_rev is defined, plus a covered file.
+    paths.state_dir(tmp_path).mkdir(parents=True, exist_ok=True)
+    (paths.state_dir(tmp_path) / "canon-covers").write_text("*.md\n", encoding="utf-8")
+    (tmp_path / "tracked.md").write_text("v1", encoding="utf-8")
+
+    assert reality.parse_baseline(tmp_path) is None  # un-baselined before merge
+    arc_dir = paths.arcs_dir(tmp_path) / "03-fix-leak"
+    _make_delta(arc_dir, "patched the valve")
+    merge.merge_delta(tmp_path, arc_dir, slug="fix-leak", date="2026-06-25")
+
+    # After merge, the CANON.md preamble carries the current reality-rev.
+    assert reality.parse_baseline(tmp_path) == reality.reality_rev(tmp_path)
+
+
+def test_merge_without_manifest_stamps_no_baseline(tmp_path):
+    from tide.cannon import reality
+
+    store.init(tmp_path, name="demo")
+    arc_dir = paths.arcs_dir(tmp_path) / "03-fix-leak"
+    _make_delta(arc_dir, "body")
+    merge.merge_delta(tmp_path, arc_dir, slug="fix-leak", date="2026-06-25")
+    assert reality.parse_baseline(tmp_path) is None  # no manifest → no baseline

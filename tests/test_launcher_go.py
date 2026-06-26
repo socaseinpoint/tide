@@ -504,3 +504,61 @@ def test_cli_go_prints_front_door_banner(tmp_control_home, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "tide · go" in out                  # the human sees the door banner
     assert "in-flight: none" in out            # calm clean line
+
+
+# --- arc-worktree cwd at launch (resume + new) ------------------------------
+
+def _set_orca_ws(arc: Path, ws: Path) -> None:
+    from tide import fields
+    from tide.adapters.orca_worktree import WORKSPACE_FIELD
+    from tide.arc import worktree
+
+    fields.set_field(worktree._passport(arc), WORKSPACE_FIELD, str(ws))
+
+
+def test_cli_go_resume_lands_in_arc_worktree_cwd(tmp_control_home, monkeypatch, capsys):
+    from tide import cli
+
+    arc = _make_arc(tmp_control_home, "01-thread")
+    _write_handoff(arc, date="2026-06-25", mode="continue", where="mid build")
+    ws = tmp_control_home / "wt-01"
+    ws.mkdir()
+    _set_orca_ws(arc, ws)
+    (tmp_control_home / "MIGRATE.md").write_text("# migrate", encoding="utf-8")
+    monkeypatch.chdir(tmp_control_home)
+
+    rc = cli.main(["go", "--mode", "resume", "--pick", "1", "--dry-run"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    cwd_line = next(ln for ln in out.splitlines() if "cwd:" in ln)
+    assert str(ws) in cwd_line
+
+
+def test_cli_go_new_arc_lands_in_arc_worktree_cwd(tmp_control_home, monkeypatch, capsys):
+    from tide import cli
+
+    arc = _make_arc(tmp_control_home, "01-thread")
+    ws = tmp_control_home / "wt-new"
+    ws.mkdir()
+    _set_orca_ws(arc, ws)
+    monkeypatch.chdir(tmp_control_home)
+
+    rc = cli.main(["go", "--mode", "new", "--pick", "1", "--dry-run"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    cwd_line = next(ln for ln in out.splitlines() if "cwd:" in ln)
+    assert str(ws) in cwd_line
+
+
+def test_cli_go_just_chat_stays_on_root_cwd(tmp_control_home, monkeypatch, capsys):
+    from tide import cli
+
+    _make_arc(tmp_control_home, "01-thread")
+    (tmp_control_home / "MIGRATE.md").write_text("# migrate", encoding="utf-8")
+    monkeypatch.chdir(tmp_control_home)
+
+    rc = cli.main(["go", "--mode", "new", "--pick", "0", "--dry-run"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    cwd_line = next(ln for ln in out.splitlines() if "cwd:" in ln)
+    assert str(tmp_control_home) in cwd_line

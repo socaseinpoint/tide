@@ -723,3 +723,74 @@ def test_open_arc_restamps_reality_rev(tmp_project):
     new_rr = fields.read_field(entry / "arc.md", "reality-rev")
     assert new_rr == reality.reality_rev(tmp_project)
     assert new_rr != old_rr  # re-stamp updated it
+
+
+# ---------------------------------------------------------------------------
+# Standing reality↔canon baseline (parse / stamp)
+# ---------------------------------------------------------------------------
+
+class TestBaseline:
+    def test_parse_baseline_absent(self, tmp_project):
+        assert reality.parse_baseline(tmp_project) is None
+
+    def test_parse_baseline_present(self, tmp_project):
+        from tide import paths
+        canon = paths.canon_file(tmp_project)
+        text = canon.read_text(encoding="utf-8")
+        canon.write_text(text.replace("# CANON.md", "reality-rev: deadbeef0000\n# CANON.md"), encoding="utf-8")
+        assert reality.parse_baseline(tmp_project) == "deadbeef0000"
+
+    def test_parse_baseline_ignores_journal_mention(self, tmp_project):
+        """A reality-rev token in the journal must not be read as the baseline."""
+        from tide import paths
+        canon = paths.canon_file(tmp_project)
+        canon.write_text(
+            canon.read_text(encoding="utf-8")
+            + "\n### 2026-01-01 · x\n\nnote: reality-rev: notbaseline\n",
+            encoding="utf-8",
+        )
+        assert reality.parse_baseline(tmp_project) is None
+
+    def test_stamp_noop_without_manifest(self, tmp_project):
+        from tide import paths
+        canon = paths.canon_file(tmp_project)
+        before = canon.read_text(encoding="utf-8")
+        assert reality.stamp_canon_baseline(tmp_project) is None
+        assert canon.read_text(encoding="utf-8") == before  # file untouched
+
+    def test_stamp_writes_preamble_line(self, tmp_project):
+        _write_state_covers(tmp_project, ["*.md"])
+        (tmp_project / "tracked.md").write_text("v1", encoding="utf-8")
+        rr = reality.stamp_canon_baseline(tmp_project)
+        assert rr is not None
+        assert reality.parse_baseline(tmp_project) == rr
+        # the baseline lives in the preamble, before the first section
+        from tide import paths
+        text = paths.canon_file(tmp_project).read_text(encoding="utf-8")
+        pre = text.split("## ", 1)[0]
+        assert "reality-rev: {0}".format(rr) in pre
+
+    def test_stamp_is_idempotent_replace_not_append(self, tmp_project):
+        _write_state_covers(tmp_project, ["*.md"])
+        (tmp_project / "tracked.md").write_text("v1", encoding="utf-8")
+        reality.stamp_canon_baseline(tmp_project)
+        from tide import paths
+        first = paths.canon_file(tmp_project).read_text(encoding="utf-8")
+        # re-stamp at the same reality → byte-identical, exactly one baseline line
+        reality.stamp_canon_baseline(tmp_project)
+        second = paths.canon_file(tmp_project).read_text(encoding="utf-8")
+        assert first == second
+        assert second.count("reality-rev:") == 1
+
+    def test_stamp_replaces_on_reality_change(self, tmp_project):
+        _write_state_covers(tmp_project, ["*.md"])
+        f = tmp_project / "tracked.md"
+        f.write_text("v1", encoding="utf-8")
+        rr1 = reality.stamp_canon_baseline(tmp_project)
+        f.write_text("v2", encoding="utf-8")
+        rr2 = reality.stamp_canon_baseline(tmp_project)
+        assert rr1 != rr2
+        from tide import paths
+        text = paths.canon_file(tmp_project).read_text(encoding="utf-8")
+        assert text.count("reality-rev:") == 1
+        assert reality.parse_baseline(tmp_project) == rr2
