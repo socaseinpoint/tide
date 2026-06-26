@@ -72,9 +72,41 @@ def _cmd_status(args: argparse.Namespace) -> int:
     return board.cmd_status(args)
 
 
+def _cmd_gate(args: argparse.Namespace) -> int:
+    """Run the M1 tri-state cannon-gate oracle and return a POSIX exit code.
+
+    Exit codes: 0 = current, 1 = stale, 2 = oracle-error.  Code 2 is
+    FAIL-LOUD: callers (shells, hooks, CI, Orca --precheck) MUST treat it as
+    an alert, never as a silent skip.
+    """
+    from .. import gate
+
+    try:
+        root = paths.require_tide_root()
+    except FileNotFoundError as exc:
+        print("cannon gate: oracle-error", file=sys.stderr)
+        print("  oracle-error: {0}".format(exc), file=sys.stderr)
+        return 2
+
+    code, reasons = gate.decide(root)
+
+    if code == 0:
+        print("cannon gate: current")
+    elif code == 1:
+        print("cannon gate: stale ({0} issue(s))".format(len(reasons)))
+        for r in reasons:
+            print("  - {0}".format(r))
+    else:  # code == 2
+        print("cannon gate: oracle-error (code 2)", file=sys.stderr)
+        for r in reasons:
+            print("  {0}".format(r), file=sys.stderr)
+
+    return code
+
+
 def register(subparsers) -> None:
     """Add the ``cannon`` command group to *subparsers* (called by cli.py)."""
-    p = subparsers.add_parser("cannon", help="durable truth: init/status/merge/rev")
+    p = subparsers.add_parser("cannon", help="durable truth: init/status/merge/rev/gate")
     nsub = p.add_subparsers(dest="cannon_cmd")
 
     ip = nsub.add_parser("init", help="seed a project's cannon/ (CANON.md + config)")
@@ -92,3 +124,9 @@ def register(subparsers) -> None:
 
     rp = nsub.add_parser("rev", help="print the current cannon-rev (sha256 of CANON.md)")
     rp.set_defaults(func=_cmd_rev, _cmd="cannon rev")
+
+    gp = nsub.add_parser(
+        "gate",
+        help="M1 tri-state oracle: 0=current 1=stale 2=oracle-error (POSIX exit code)",
+    )
+    gp.set_defaults(func=_cmd_gate, _cmd="cannon gate")

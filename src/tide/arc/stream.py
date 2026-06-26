@@ -134,9 +134,19 @@ def _open_goal_substream(root: Path, goal_slug: str) -> Path:
 # --- cannon-rev stamp ------------------------------------------------------
 
 def stamp_rev(entry_dir: Path, root: Path) -> str:
-    """Stamp the current ``cannon-rev`` into an entry's passport; return the rev."""
+    """Stamp cannon-rev (and reality-rev when a manifest exists) into the passport.
+
+    M2 extension: also stamps ``reality-rev:`` via
+    :func:`tide.cannon.reality.stamp_reality_rev` when the project carries a
+    ``canon-covers:`` manifest. The lazy import keeps the load-time import
+    graph cycle-free (``cannon.reality`` does not import ``arc.stream`` at its
+    module top).
+    """
     r = rev.compute(root)
-    fields.set_field(passport_path(entry_dir), "cannon-rev", r)
+    pp = passport_path(entry_dir)
+    fields.set_field(pp, "cannon-rev", r)
+    from ..cannon import reality as _reality  # lazy: avoids load-time cycle
+    _reality.stamp_reality_rev(pp, root)
     return r
 
 
