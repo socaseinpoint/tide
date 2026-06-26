@@ -58,6 +58,9 @@ python3.12 -m tide --version
 
 ## The 60-second loop
 
+You set up the control-home, then **steer in plain words**. The verbs below are
+what the orchestrator session runs on your behalf — you don't type them by hand.
+
 ```bash
 # 1. unfold a control-home in an empty dir — this dir is where you lead from
 mkdir ~/control && cd ~/control
@@ -71,33 +74,36 @@ tide roster ls
 tide                      # interactive menu
 tide menu --pick all      # non-interactive
 #  → opens a terminal with TIDE_ROLE=orchestrator and the right context.
-
-# --- from here on, the agent runs the module CLI; you steer in prose ---
-
-# 4. open a unit of work (an arc) inside a project — arcs are addressed by SLUG
-tide arc new ship-onboarding
-tide arc open ship-onboarding
-
-# 5. bind the work to a contract (goal + criteria), then run it
-tide contract new ship-onboarding
-tide contract sign ship-onboarding     # strict = human signs; loose = synchronous
-
-# 6. fold the result back into durable truth (orchestrator-only)
-tide contract report ship-onboarding   # what was done
-tide contract proof ship-onboarding    # evidence the criteria are met
-tide contract accept ship-onboarding
-# the worker proposes the cannon-delta in the arc's delta.md, then:
-tide contract close ship-onboarding    # guards + merges the delta → CANON.md
-
-# board, any time
-tide status            # current project
-tide status --all      # roster-wide; flags unmerged deltas + drift
 ```
 
-`arc` carves the work, `contract` binds it to a goal you can sign off on, and
-`cannon` is the single place durable truth accumulates. The merge from an arc's
-`output/` into `CANON.md` is the **one serialization point** — and it only
-happens inside a live orchestrator session.
+From here you talk. Say *"ship onboarding — a 3-step walkthrough, no console
+errors,"* and the orchestrator runs the loop for you:
+
+```bash
+tide arc new ship-onboarding           # carve a bounded unit (addressed by slug)
+tide arc open ship-onboarding          # select it; stamps the current cannon-rev
+
+tide contract new  ship-onboarding     # bind goal + hard criteria
+tide contract sign ship-onboarding     # strict = you sign first; loose = synchronous
+#   … a worker subagent builds into the arc's output/ and proposes delta.md …
+tide contract report ship-onboarding   # what was done
+tide contract proof  ship-onboarding   # evidence the criteria are met
+tide contract accept ship-onboarding
+tide contract close  ship-onboarding   # guards + merges the delta → CANON.md
+
+tide status            # current project — flags unmerged deltas + drift
+tide status --all      # roster-wide
+```
+
+`arc` carves the work, `contract` binds it to a goal you sign off on, and `cannon`
+is the single place durable truth accumulates. The merge of an arc's delta into
+`CANON.md` is the **one serialization point** — orchestrator-only, in a live
+session. You cannot open the next arc while the last one's delta is unmerged.
+
+> Want to watch the whole loop run for real? `examples/tide-pool/` is a single-file
+> browser game built through three arcs end-to-end — read
+> [`examples/tide-pool/SHOWCASE.md`](examples/tide-pool/SHOWCASE.md). `dogfood-runA/`
+> and `runB/` are two more finished `.tide/` trees to `cat`/`grep`/`diff`.
 
 ---
 
