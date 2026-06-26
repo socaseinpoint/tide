@@ -540,18 +540,34 @@ def _inflight_gate(root: Path, *, dry_run: bool) -> bool:
 
 # --- launch delegation -----------------------------------------------------
 
-def _launch(seed_file: Optional[str], decision: RoleDecision, *, dry_run: bool) -> int:
+def _maybe_activate_orca(arc_dir: Path) -> bool:
+    """Best-effort focus of an arc's Orca workspace (never raises / blocks entry)."""
+    try:
+        from ..adapters import orca_worktree
+        return orca_worktree.activate_workspace(Path(arc_dir))
+    except Exception:  # noqa: BLE001  a failed focus must never block the launch
+        return False
+
+
+def _launch(
+    seed_file: Optional[str],
+    decision: RoleDecision,
+    *,
+    dry_run: bool,
+    cwd: Optional[Path] = None,
+) -> int:
     """Hand the resolved seed to ``tide terminal`` (the single scoped-launch path).
 
     First runs the in-flight gate at this single choke point (both doors funnel
     here); if it aborts, nothing is launched. Otherwise builds the Namespace
     ``terminal.cmd_terminal`` expects and calls it directly — so the scoped+skip-
     perms argv, the cwd, and the exec live in ONE place (``launcher.terminal``),
-    never duplicated here. The ``root`` pins terminal to *decision.root* (so a
-    project-manager lands in its project, not the climbed-to control-home), and
+    never duplicated here. The in-flight gate stays on *decision.root* (project-level
+    signals), but the launch *cwd* is *cwd* when given (the arc's worktree) so the
+    session lands in the right place — falling back to *decision.root* (the head
+    ``just chat`` path keeps the control-home root + its MIGRATE.md seed). The
     ``tide_role`` carries the role into the spawned session's env. ``seed_file=None``
-    lets terminal resolve its own default (MIGRATE.md/RESUME.md) — the head ``just
-    chat`` path.
+    lets terminal resolve its own default (MIGRATE.md/RESUME.md).
     """
     if not _inflight_gate(decision.root, dry_run=dry_run):
         return 0
@@ -560,7 +576,7 @@ def _launch(seed_file: Optional[str], decision: RoleDecision, *, dry_run: bool) 
         dry_run=dry_run,
         no_disable_slash=False,
         no_skip_permissions=False,
-        root=str(decision.root),
+        root=str(cwd or decision.root),
         tide_role=decision.env_role,
     )
     return terminal.cmd_terminal(ns)
@@ -621,9 +637,13 @@ def _do_resume(decision: RoleDecision, args, dry_run: bool) -> int:
     seed_file = seed_for_thread(
         root, thread, is_orchestrator=decision.is_orchestrator, dry_run=dry_run
     )
+    from ..arc import worktree
+    cwd = worktree.resolve_cwd(root, thread.arc_dir)
+    if not dry_run:
+        _maybe_activate_orca(thread.arc_dir)
     if dry_run:
         print("\nwould resume [{0}] {1} →".format(thread.kind, thread.name))
-    return _launch(seed_file, decision, dry_run=dry_run)
+    return _launch(seed_file, decision, dry_run=dry_run, cwd=cwd)
 
 
 def _do_new(decision: RoleDecision, args, dry_run: bool) -> int:
@@ -653,14 +673,19 @@ def _do_new(decision: RoleDecision, args, dry_run: bool) -> int:
             chat_desc = "plain project session (tide context show triad)"
         if dry_run:
             print("\nwould start [just chat] → {0}".format(chat_desc))
+        # just-chat keeps the project/control-home root (its MIGRATE.md seed) — no arc cwd.
         return _launch(seed_file, decision, dry_run=dry_run)
     arc = arcs[n - 1]
     seed_file = seed_for_new_arc(
         root, arc, is_orchestrator=decision.is_orchestrator, dry_run=dry_run
     )
+    from ..arc import worktree
+    cwd = worktree.resolve_cwd(root, arc)
+    if not dry_run:
+        _maybe_activate_orca(arc)
     if dry_run:
         print("\nwould start [new arc] {0} →".format(arc.name))
-    return _launch(seed_file, decision, dry_run=dry_run)
+    return _launch(seed_file, decision, dry_run=dry_run, cwd=cwd)
 
 
 def cmd_go(args) -> int:

@@ -113,6 +113,17 @@ def cannon_lint(root: Path) -> List[str]:
                     " ## {0}".format(title)
                 )
 
+    # (c5) Prose-staleness: a maintained project with a canon-covers manifest but
+    # NO reality-rev baseline has never reconciled its prose against reality —
+    # surface the un-baselined state so a merge stamps it (a distinct signal from
+    # the standing reality↔canon drift the gate raises once a baseline exists).
+    if journal_body.strip() and reality.parse_manifest(root) is not None:
+        if reality.parse_baseline(root) is None:
+            issues.append(
+                "canon missing reality-rev baseline "
+                "(run 'tide cannon merge' to stamp the reality↔canon baseline)"
+            )
+
     return issues
 
 
@@ -197,6 +208,20 @@ def _stale_checks(root: Path) -> List[str]:
                         entry.name
                     )
                 )
+
+    # (b2) Standing reality↔canon baseline — independent of open arcs. The baseline
+    # is the reality-rev CANON.md was last reconciled with (stamped at merge). When
+    # it lags the current reality-rev, the covered code moved since the prose was
+    # last merged ⇒ the re-entry prose is presumed stale. Degrades silently when no
+    # manifest (current_rr is None) or no baseline (legacy / un-stamped canon).
+    if current_rr is not None:
+        baseline = reality.parse_baseline(root)
+        if baseline is not None and baseline != current_rr:
+            reasons.append(
+                "canon prose may be stale: covered code moved since last merge "
+                "(canon reality-rev {0}, current {1}) — re-read CANON.md re-entry "
+                "prose, reconcile via an arc + cannon merge".format(baseline, current_rr)
+            )
 
     # (c) Cannon lint.
     lint_issues = cannon_lint(root)

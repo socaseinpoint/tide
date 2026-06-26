@@ -24,7 +24,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 from .. import fields, paths, slug
 
@@ -95,6 +95,72 @@ def _passport(arc_dir: Path) -> Path:
     """The arc passport (arc.md or goal doc) for *arc_dir*."""
     from . import stream
     return stream.passport_path(Path(arc_dir))
+
+
+# --- re-entry cwd resolution (DRY for go + handoff) ---------------------------
+
+def resolve_cwd(root: Path, arc_dir: Optional[Path]) -> Path:
+    """The dir a session should land in for an arc: orca-workspace > git worktree > root.
+
+    Reads the passport's ``orca-workspace`` (an absolute path) first, then the raw
+    git worktree path — each used ONLY when it still exists on disk — else falls
+    back to the project *root*. A pure read: it never creates anything, and a stale
+    field (worktree removed but field lingers) degrades to the next option rather
+    than handing a caller a missing dir to ``chdir`` into.
+    """
+    root = Path(root)
+    if arc_dir is None:
+        return root
+    arc_dir = Path(arc_dir)
+
+    # 1. Orca-managed workspace (absolute path recorded in the passport).
+    from ..adapters.orca_worktree import WORKSPACE_FIELD  # lazy: stable field name
+    ws = fields.read_field(_passport(arc_dir), WORKSPACE_FIELD)
+    if ws:
+        ws_path = Path(ws).expanduser()
+        if ws_path.exists():
+            return ws_path
+
+    # 2. Raw-git worktree path (only when present on disk).
+    wt = worktree_path(root, arc_dir)
+    if wt.exists():
+        return wt
+
+    # 3. Fall back to the project root.
+    return root
+
+
+def _find_open_arc(root: Path, arc_ref: str) -> Optional[Path]:
+    """First OPEN top-stream entry in *root* matching *arc_ref* (goal preferred)."""
+    from . import stream
+    return stream._resolve(paths.arcs_dir(Path(root)), arc_ref, closed=False)
+
+
+def resolve_project_and_arc(root: Path, arc_ref: str) -> Tuple[Path, Optional[Path]]:
+    """Resolve which project owns *arc_ref* and its open arc dir (cross-project).
+
+    Looks in *root* (the cwd project / control-home) first; when *root* is a
+    control-home and the arc is not there, walks the roster and returns the first
+    registered project that holds an open arc matching *arc_ref*. Returns
+    ``(root, None)`` when nothing matches anywhere, so the caller falls back to the
+    bare project root. A pure read — no disk mutation.
+    """
+    root = Path(root)
+    entry = _find_open_arc(root, arc_ref)
+    if entry is not None:
+        return root, entry
+
+    if paths.is_control_home(root):
+        from .. import roster  # lazy: avoid a launcher/arc import cycle
+        for item in roster.read_roster(root):
+            proj = Path(item["path"]).expanduser()
+            if proj == root or not (proj / paths.TIDE_DIR).is_dir():
+                continue
+            sub = _find_open_arc(proj, arc_ref)
+            if sub is not None:
+                return proj, sub
+
+    return root, None
 
 
 # --- .gitignore helper -------------------------------------------------------

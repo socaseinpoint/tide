@@ -493,3 +493,54 @@ class TestOrcaLand:
 
         assert result == 0
         assert land_calls, "raw-git land must be called when no orca issue is set"
+
+
+# ---------------------------------------------------------------------------
+# (h) activate_workspace — re-entry focus of an existing workspace
+# ---------------------------------------------------------------------------
+
+class TestActivateWorkspace:
+    def test_calls_orca_set_activate(self, monkeypatch, tmp_project):
+        from tide.adapters.orca_worktree import _WORKTREE_BRANCH_FIELD, activate_workspace
+
+        arc = stream.new_arc(tmp_project, "focus-me")
+        fields.set_field(passport_path(arc), _WORKTREE_BRANCH_FIELD, "arc-focus-me")
+
+        calls: List[List[str]] = []
+        monkeypatch.setattr("tide.adapters.orca_worktree.orca_available", lambda: True)
+        monkeypatch.setattr(
+            "tide.adapters.orca_worktree._run_orca",
+            lambda args, check=True: calls.append(list(args)) or _cp(),
+        )
+
+        assert activate_workspace(arc) is True
+        assert calls == [["worktree", "set", "--worktree", "branch:arc-focus-me", "--activate"]]
+
+    def test_noop_without_branch(self, monkeypatch, tmp_project):
+        from tide.adapters.orca_worktree import activate_workspace
+
+        arc = stream.new_arc(tmp_project, "no-branch")
+        monkeypatch.setattr("tide.adapters.orca_worktree.orca_available", lambda: True)
+
+        called = []
+        monkeypatch.setattr(
+            "tide.adapters.orca_worktree._run_orca",
+            lambda args, check=True: called.append(args) or _cp(),
+        )
+        assert activate_workspace(arc) is False
+        assert not called
+
+    def test_noop_when_orca_unavailable(self, monkeypatch, tmp_project):
+        from tide.adapters.orca_worktree import _WORKTREE_BRANCH_FIELD, activate_workspace
+
+        arc = stream.new_arc(tmp_project, "orca-down")
+        fields.set_field(passport_path(arc), _WORKTREE_BRANCH_FIELD, "arc-orca-down")
+        monkeypatch.setattr("tide.adapters.orca_worktree.orca_available", lambda: False)
+
+        called = []
+        monkeypatch.setattr(
+            "tide.adapters.orca_worktree._run_orca",
+            lambda args, check=True: called.append(args) or _cp(),
+        )
+        assert activate_workspace(arc) is False
+        assert not called

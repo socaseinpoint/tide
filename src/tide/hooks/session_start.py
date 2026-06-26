@@ -68,12 +68,56 @@ def _unmerged_warnings(root: Path) -> List[str]:
     return warnings
 
 
+# Contract states that anchor work (a signed/running/output contract IS an arc's
+# binding). A `draft` is unsigned ⇒ NOT yet anchored. Mirrors contract.model.STATES.
+_ANCHORING_CONTRACT_STATES = ("sign", "running", "output")
+
+
+def _has_signed_contract(root: Path) -> bool:
+    """True when any arc carries a contract in a work-anchoring state (sign/running/output).
+
+    Lazy-imports ``contract.lifecycle`` so SessionStart stays light (it otherwise
+    imports only edit_gate/board/paths/slug/sync). An unsigned ``draft`` does not
+    count — only a signed contract anchors work.
+    """
+    from ..contract import lifecycle
+
+    return any(
+        c.get("state") in _ANCHORING_CONTRACT_STATES
+        for c in lifecycle.list_contracts(Path(root))
+    )
+
+
+def _arc_first_warnings(root: Path, role: str) -> List[str]:
+    """Warn the HEAD when it leads work with no open arc and no signed contract.
+
+    Advisory only (SessionStart never blocks). A no-op for workers (they always
+    hold exactly one arc) and whenever work is already anchored — an open arc OR a
+    signed/running/output contract. The escape hatch keeps a legitimate read/orient
+    entry on the control-home from nagging once a contract exists.
+    """
+    if role != "orchestrator":
+        return []  # workers always hold one arc — no-op
+    if edit_gate.has_open_arc(root):
+        return []
+    if _has_signed_contract(root):  # signed/running/output ⇒ work is anchored
+        return []
+    return [
+        "  ⚠ arc-first: no open arc / signed contract — anchor work before "
+        "leading it ('tide arc new <slug>' or 'tide go --mode new')"
+    ]
+
+
 def render(root: Path, role: str) -> str:
-    """Render the SessionStart text: board + role reminder + drift/unmerged warnings."""
+    """Render the SessionStart text: board + role reminder + drift/unmerged/arc-first warnings."""
     root = Path(root)
     lines: List[str] = [board.render_board(root), "", _role_reminder(role)]
 
-    warnings = _drift_warnings(root) + _unmerged_warnings(root)
+    warnings = (
+        _drift_warnings(root)
+        + _unmerged_warnings(root)
+        + _arc_first_warnings(root, role)
+    )
     if warnings:
         lines.append("")
         lines.append("WARNINGS")

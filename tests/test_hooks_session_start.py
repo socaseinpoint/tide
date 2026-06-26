@@ -79,3 +79,46 @@ def test_cli_session_start_outside_project_is_silent_noop(tmp_path, monkeypatch,
     rc = cli.main(["hook", "session-start"])
     assert rc == 0
     assert capsys.readouterr().out == ""
+
+
+# --- G1 arc-first WARN (advisory; orchestrator-only) ------------------------
+
+def test_arc_first_warning_when_orchestrator_no_arc_no_contract(tmp_project):
+    text = session_start.render(tmp_project, "orchestrator")
+    assert "WARNINGS" in text
+    assert "arc-first" in text
+
+
+def test_no_arc_first_warning_for_worker(tmp_project):
+    text = session_start.render(tmp_project, "worker")
+    assert "arc-first" not in text
+
+
+def test_no_arc_first_warning_when_open_arc(tmp_project):
+    stream.new_arc(tmp_project, "do-thing")
+    text = session_start.render(tmp_project, "orchestrator")
+    assert "arc-first" not in text
+
+
+def _write_sealed_contract(root, *, state: str) -> None:
+    """A CLOSED arc (no open arc) carrying a contract in *state* — anchor probe."""
+    arc = root / ".tide" / "arcs" / "__01-sealed__"
+    arc.mkdir(parents=True, exist_ok=True)
+    (arc / "arc.md").write_text("# 01-sealed\n\nstatus: done\n", encoding="utf-8")
+    (arc / "contract.md").write_text(
+        "# contract — x\n\nslug: x\nstate: {0}\n".format(state), encoding="utf-8"
+    )
+
+
+def test_no_arc_first_warning_when_signed_contract(tmp_project):
+    # A running contract anchors work even with no OPEN arc → no warning.
+    _write_sealed_contract(tmp_project, state="running")
+    text = session_start.render(tmp_project, "orchestrator")
+    assert "arc-first" not in text
+
+
+def test_draft_contract_does_not_anchor(tmp_project):
+    # A draft (unsigned) contract is NOT anchored → the warning still fires.
+    _write_sealed_contract(tmp_project, state="draft")
+    text = session_start.render(tmp_project, "orchestrator")
+    assert "arc-first" in text
