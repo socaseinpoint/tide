@@ -28,9 +28,10 @@ thin CLI handler ``cli.py`` wires for both ``tide status`` and ``tide arc status
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from .. import fields, paths, slug
 from ..cannon import rev
@@ -332,6 +333,103 @@ def render_entry_summary(root: Path) -> str:
     return "\n".join(lines)
 
 
+# --- JSON projection (same data render_board computes; for canon/drift dashboards) --
+
+def _entry_dict(entry_dir: Path, current_rev: str, *, include_sub: bool) -> Dict[str, object]:
+    """Pure dict projection of one stream entry — the SAME fields the line renderers read.
+
+    Mirrors :func:`_top_line` (top entries, ``include_sub=True`` → badge + ``sub_arcs``)
+    and :func:`_sub_line` (sub-arcs, ``include_sub=False`` → no badge/substream, exactly
+    as the renderer descends only one level). No FS scan is re-derived: every field
+    routes through the same ``_status``/``_goal_line``/``_field``/``goal_badge``/
+    ``_is_drifted`` helpers the text board uses.
+    """
+    name = entry_dir.name
+    is_goal = slug.is_goal_entry(name)
+    badge = goal_badge(entry_dir) if (is_goal and include_sub) else None
+    sub_arcs = (
+        [
+            _entry_dict(sub, current_rev, include_sub=False)
+            for sub in _stream_entries(entry_dir / paths.ARCS_DIRNAME)
+        ]
+        if (is_goal and include_sub)
+        else []
+    )
+    return {
+        "name": name,
+        "status": _status(entry_dir),
+        "goal": _goal_line(entry_dir),
+        "is_goal": is_goal,
+        "is_closed": slug.is_closed_entry(name),
+        "cannon_rev_stamped": _field(entry_dir, "cannon-rev"),
+        "drifted": _is_drifted(entry_dir, current_rev),
+        "supersedes": _field(entry_dir, "supersedes"),
+        "badge": {"closed": badge[0], "total": badge[1]} if badge else None,
+        "sub_arcs": sub_arcs,
+    }
+
+
+def project_status_dict(root: Path) -> Dict[str, object]:
+    """Structured projection of one project's STREAM board (canon/drift/unmerged/health).
+
+    The machine-readable twin of :func:`render_board`: same data source, same helpers,
+    same ``offenders`` reuse (so the dict and the text board can never disagree). Pure.
+    """
+    from .. import sync  # lazy: sync imports arc.stream at top, not arc.board.
+
+    root = Path(root)
+    current_rev = rev.compute(root)
+    offenders = sync.unmerged_deltas(root)
+    drifted = _drifted_entries(root, current_rev)
+    return {
+        "name": root.name,
+        "path": str(root),
+        "cannon_rev": current_rev,
+        "stream": [
+            _entry_dict(e, current_rev, include_sub=True)
+            for e in _stream_entries(paths.arcs_dir(root))
+        ],
+        "unmerged_deltas": [
+            {"name": o.name, "slug": slug.entry_slug(o.name)} for o in offenders
+        ],
+        "candidates": [
+            {"stem": c["stem"], "from": c["from"]} for c in candidate.list_candidates(root)
+        ],
+        "health": {
+            "cannon_rev": current_rev,
+            "unmerged_count": len(offenders),
+            "unmerged_arcs": [o.name for o in offenders],
+            "drifted_entries": [d.name for d in drifted],
+        },
+    }
+
+
+def all_status_dict(control_home: Path) -> List[Dict[str, object]]:
+    """Roster-wide list of :func:`project_status_dict`, one entry per registered project.
+
+    Mirrors :func:`_render_all`: non-``.tide`` projects yield ``{tide_project: False}``;
+    tide projects carry the full dict, with name/path overridden from the roster line.
+    """
+    from .. import roster
+
+    control_home = Path(control_home)
+    out: List[Dict[str, object]] = []
+    for entry in roster.read_roster(control_home):
+        proj = Path(entry["path"]).expanduser()
+        if not paths.tide_dir(proj).is_dir():
+            out.append({"name": entry["name"], "path": entry["path"], "tide_project": False})
+            continue
+        out.append(
+            {
+                **project_status_dict(proj),
+                "name": entry["name"],
+                "path": entry["path"],
+                "tide_project": True,
+            }
+        )
+    return out
+
+
 # --- CLI handler -----------------------------------------------------------
 
 def _render_all(root: Path) -> str:
@@ -354,6 +452,10 @@ def _render_all(root: Path) -> str:
 def cmd_status(args) -> int:
     """Print the STREAM board (``tide status`` / ``tide arc status``); ``--all`` = roster-wide."""
     root = paths.require_tide_root()
+    if getattr(args, "json", False):
+        data = all_status_dict(root) if getattr(args, "all", False) else project_status_dict(root)
+        print(json.dumps(data, default=str, indent=2))
+        return 0
     if getattr(args, "all", False):
         print(_render_all(root))
     else:

@@ -94,6 +94,7 @@ def _register_status(sub) -> None:
 
     p = sub.add_parser("status", help="render the STREAM board for the current project")
     p.add_argument("--all", action="store_true", help="roster-wide status")
+    p.add_argument("--json", action="store_true", help="emit the board as JSON (canon/drift projection)")
     p.set_defaults(func=cmd_status, _cmd="status")
 
 
@@ -193,6 +194,7 @@ def _register_arc(sub) -> None:
     register_stream(asub)
     register_worktree(asub)
     sp = asub.add_parser("status", help="render the STREAM board")
+    sp.add_argument("--json", action="store_true", help="emit the board as JSON (canon/drift projection)")
     sp.set_defaults(func=arc_status, _cmd="arc status")
 
 
