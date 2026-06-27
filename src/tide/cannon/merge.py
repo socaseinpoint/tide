@@ -298,6 +298,15 @@ def merge_delta(
     delta_body = _delta_body(delta_path.read_text(encoding="utf-8"))
 
     canon = paths.canon_file(root)
+
+    # F5: a missing CANON.md is a structural error — fabricating a canon from an
+    # empty base silently produces a malformed file.  Fail loud with a clear message
+    # so the caller knows to run 'tide cannon init' first.
+    if not canon.is_file():
+        raise FileNotFoundError(
+            "no CANON.md at {0} (run 'tide cannon init' first)".format(canon)
+        )
+
     lock_dir = paths.state_dir(root) / ".merge.lock"
     # Hold the lock across the ENTIRE critical section — atomic_write(canon),
     # mark_merged, AND stamp_canon_baseline — so no concurrent merge can read
@@ -312,7 +321,7 @@ def merge_delta(
     #      state of every covered file (a manifest covering delta.md would otherwise
     #      see ``merged: no→yes`` happen *after* the baseline and trip standing drift).
     with _io.file_lock(lock_dir):
-        canon_text = canon.read_text(encoding="utf-8") if canon.is_file() else ""
+        canon_text = canon.read_text(encoding="utf-8")
         merged = merge_delta_text(canon_text, delta_body, date=date, slug=slug)
         _io.atomic_write(canon, merged)
         mark_merged(delta_path, date=date)

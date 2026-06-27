@@ -18,6 +18,7 @@ handler. Both are defensive: outside a tide project they emit nothing and exit 0
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import List, Optional
 
@@ -118,8 +119,13 @@ def _readme_drift_warnings(root: Path) -> List[str]:
         code, _reasons = _readme.check(root)
         if code == 1:
             return ["  readme: drift — run 'tide readme' to regenerate"]
-    except Exception:
-        pass  # SessionStart must never raise; silently skip on unexpected error
+    except Exception as exc:
+        # F4: "hook must never raise" means no-raise, NOT silence.
+        # Emit a stderr advisory so the degradation is visible.
+        print(
+            "tide: [session-start] readme-drift check failed: {0}".format(exc),
+            file=sys.stderr,
+        )
     return []
 
 

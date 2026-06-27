@@ -166,3 +166,31 @@ def test_readme_drift_warning_silent_for_nonexistent_path(tmp_path):
     nonexistent = tmp_path / "no-such-project"
     warnings = session_start._readme_drift_warnings(nonexistent)
     assert warnings == []
+
+
+# ---------------------------------------------------------------------------
+# F4: readme-drift exception emits stderr advisory instead of silent pass
+# ---------------------------------------------------------------------------
+
+def test_readme_drift_warning_emits_stderr_advisory_on_exception(
+    tmp_project, monkeypatch, capsys
+):
+    """F4: a failed readme-drift check must emit a stderr advisory, not silently swallow it.
+
+    Before the fix ``except Exception: pass`` dropped real failures with no trace.
+    After the fix a warning line is printed to stderr so the degradation is visible.
+    The no-raise contract is still preserved (warnings list still returns []).
+    """
+    import tide.readme as _readme
+
+    def boom(root):
+        raise RuntimeError("simulated readme check explosion")
+
+    monkeypatch.setattr(_readme, "check", boom)
+
+    warnings = session_start._readme_drift_warnings(tmp_project)
+    assert warnings == []  # no-raise contract preserved
+
+    err = capsys.readouterr().err
+    assert "session-start" in err
+    assert "readme-drift" in err

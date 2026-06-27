@@ -41,6 +41,8 @@ Lint issues → stale (1), not oracle-error, because they are assessable
 
 from __future__ import annotations
 
+import sys
+import traceback
 from pathlib import Path
 from typing import List, Tuple
 
@@ -263,5 +265,8 @@ def decide(root: Path) -> Tuple[int, List[str]]:
 
     except (OSError, UnicodeDecodeError) as exc:
         return 2, ["oracle-error: {0}".format(exc)]
-    except Exception as exc:  # pragma: no cover  # catch-all: never silently 0
+    except Exception as exc:  # catch-all: never silently 0
+        # P2-1: log the full traceback so a parsing/logic bug is distinguishable
+        # from "CANON unreadable" — a bare exc string hides root causes.
+        print(traceback.format_exc(), file=sys.stderr)
         return 2, ["oracle-error (unexpected): {0}".format(exc)]

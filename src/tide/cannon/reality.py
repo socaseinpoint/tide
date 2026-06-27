@@ -59,6 +59,7 @@ from __future__ import annotations
 
 import hashlib
 import subprocess
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
@@ -235,7 +236,14 @@ def _file_fingerprint(abs_path: Path) -> str:
         try:
             text = p.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
-            return hashlib.sha256(p.read_bytes()).hexdigest()
+            # F10: the read_bytes fallback can also fail; re-raise with path context
+            # so the oracle-error diagnostic names the culprit file.
+            try:
+                return hashlib.sha256(p.read_bytes()).hexdigest()
+            except OSError as exc:
+                raise OSError(
+                    "cannot read file {0}: {1}".format(p, exc)
+                ) from exc
         return hashlib.sha256(_api_surface(text).encode("utf-8")).hexdigest()
     return hashlib.sha256(p.read_bytes()).hexdigest()
 
@@ -250,7 +258,13 @@ def _is_git_repo(root: Path) -> bool:
 
 
 def _ls_files(root: Path, globs: List[str]) -> Set[str]:
-    """Git-tracked relative paths matching *globs* (empty set on any git error)."""
+    """Git-tracked relative paths matching *globs*.
+
+    Raises ``OSError`` (and emits a stderr advisory) when git fails.  A git-infra
+    failure is NOT the same as "zero covered files" — returning an empty set on
+    failure would masquerade as success and silently disable the reality-rev axis.
+    Callers that propagate up to ``gate.decide`` surface this as oracle-error (2).
+    """
     if not globs:
         return set()
     try:
@@ -260,8 +274,14 @@ def _ls_files(root: Path, globs: List[str]) -> Set[str]:
             text=True,
             check=True,
         )
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return set()
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        print(
+            "tide: [reality] git ls-files failed; reality-rev axis degraded: {0}".format(exc),
+            file=sys.stderr,
+        )
+        raise OSError(
+            "git ls-files failed at {0}: {1}".format(root, exc)
+        ) from exc
     return {ln.strip() for ln in result.stdout.splitlines() if ln.strip()}
 
 

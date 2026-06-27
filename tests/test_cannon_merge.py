@@ -350,3 +350,29 @@ def test_merge_without_manifest_stamps_no_baseline(tmp_path):
     _make_delta(arc_dir, "body")
     merge.merge_delta(tmp_path, arc_dir, slug="fix-leak", date="2026-06-25")
     assert reality.parse_baseline(tmp_path) is None  # no manifest → no baseline
+
+
+# ---------------------------------------------------------------------------
+# F5: merge_delta raises clearly when CANON.md is missing (not silent empty merge)
+# ---------------------------------------------------------------------------
+
+def test_merge_delta_raises_file_not_found_when_canon_missing(tmp_path):
+    """F5: merge_delta must raise FileNotFoundError (not silently fabricate) when CANON.md absent.
+
+    Before the fix the missing CANON.md was silently treated as an empty base
+    string, producing a structurally malformed CANON.md from thin air.
+    After the fix a clear FileNotFoundError names the missing file and the fix.
+    """
+    import pytest
+
+    # Build .tide/ structure WITHOUT initialising CANON.md
+    paths.arcs_dir(tmp_path).mkdir(parents=True, exist_ok=True)
+    paths.state_dir(tmp_path).mkdir(parents=True, exist_ok=True)
+    # Confirm CANON.md is truly absent
+    assert not paths.canon_file(tmp_path).is_file()
+
+    arc_dir = paths.arcs_dir(tmp_path) / "01-work"
+    _make_delta(arc_dir, "some delta body")
+
+    with pytest.raises(FileNotFoundError, match="CANON.md"):
+        merge.merge_delta(tmp_path, arc_dir, slug="work")
