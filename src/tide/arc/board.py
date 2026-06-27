@@ -441,6 +441,11 @@ def all_status_dict(control_home: Path) -> List[Dict[str, object]]:
 
     Mirrors :func:`_render_all`: non-``.tide`` projects yield ``{tide_project: False}``;
     tide projects carry the full dict, with name/path overridden from the roster line.
+
+    Every entry includes an ``"environment"`` key: ``None`` for local projects (those
+    without an environment field in the roster) and the environment name string for
+    remote ones.  This mirrors the roster dict contract and lets callers distinguish
+    local vs. remote without re-reading the roster.
     """
     from .. import roster
 
@@ -448,14 +453,21 @@ def all_status_dict(control_home: Path) -> List[Dict[str, object]]:
     out: List[Dict[str, object]] = []
     for entry in roster.read_roster(control_home):
         proj = Path(entry["path"]).expanduser()
+        env: "str | None" = entry.get("environment") or None
         if not paths.tide_dir(proj).is_dir():
-            out.append({"name": entry["name"], "path": entry["path"], "tide_project": False})
+            out.append({
+                "name": entry["name"],
+                "path": entry["path"],
+                "environment": env,
+                "tide_project": False,
+            })
             continue
         out.append(
             {
                 **project_status_dict(proj),
                 "name": entry["name"],
                 "path": entry["path"],
+                "environment": env,
                 "tide_project": True,
             }
         )
@@ -465,13 +477,23 @@ def all_status_dict(control_home: Path) -> List[Dict[str, object]]:
 # --- CLI handler -----------------------------------------------------------
 
 def _render_all(root: Path) -> str:
-    """Roster-wide STREAM boards from a control-home (one block per project)."""
+    """Roster-wide STREAM boards from a control-home (one block per project).
+
+    Remote entries (those carrying an ``"environment"`` key from the roster)
+    include an ``env: <name>`` annotation in the block header so the single-pane
+    view distinguishes local projects from those living on another machine.  No
+    remote spawn or connection is attempted here — that is human-gated.
+    """
     from .. import roster
 
     blocks: List[str] = []
     for entry in roster.read_roster(root):
         proj = Path(entry["path"]).expanduser()
-        header = "=== {name}  ({path}) ===".format(name=entry["name"], path=entry["path"])
+        env = entry.get("environment") or ""
+        env_suffix = "  env: {0}".format(env) if env else ""
+        header = "=== {name}  ({path}){env} ===".format(
+            name=entry["name"], path=entry["path"], env=env_suffix
+        )
         if not paths.tide_dir(proj).is_dir():
             blocks.append("{0}\n  (no .tide/ — not a tide project)".format(header))
             continue
