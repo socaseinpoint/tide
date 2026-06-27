@@ -30,17 +30,16 @@ pip install tide          # or: pipx install tide
 tide --version
 ```
 
-### Via Homebrew tap (once the release tarball is published)
+### Via Homebrew tap (live)
 
 ```bash
-brew tap socaseinpoint/tide https://github.com/socaseinpoint/tide
+brew tap socaseinpoint/tide https://github.com/socaseinpoint/homebrew-tide
 brew install socaseinpoint/tide/tide
 tide --version
 ```
 
-The Homebrew formula lives at `packaging/tide.rb`. The `url` and `sha256` in that
-file are placeholders marked `# TODO(publish)` — fill them from the released PyPI
-sdist before cutting a tap release.
+The formula pins the immutable `v0.1.0` release-asset sdist (stable sha256). The
+template in `packaging/tide.rb` documents how a new version is cut.
 
 ---
 
