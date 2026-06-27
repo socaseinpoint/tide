@@ -190,6 +190,15 @@ def _register_readme(sub) -> None:
     register_readme(sub)
 
 
+def _register_onboarding(sub) -> None:
+    # C2: peripheral first-run onboarding add-on — guided pass-or-skip walkthrough
+    # of the first-project flow. Self-contained in tide.onboarding/; this is the
+    # ONLY core wiring it needs (mirror touch-point: one nudge line in session_start).
+    from .onboarding import register as register_onboarding
+
+    register_onboarding(sub)
+
+
 def _register_self_update(sub) -> None:
     # 18-self-update: keep one tide current on any machine — detect a stale install
     # vs the source-of-truth (pluggable VersionSource), run the REGRESSION GATE
@@ -309,6 +318,7 @@ def build_parser() -> argparse.ArgumentParser:
     _register_migrate_arcs(subparsers)
     _register_readme(subparsers)
     _register_verify(subparsers)
+    _register_onboarding(subparsers)
     _register_self_update(subparsers)
 
     _register_version(subparsers)
