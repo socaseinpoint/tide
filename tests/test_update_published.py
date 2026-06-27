@@ -29,10 +29,14 @@ class _FakeResp:
     """A minimal urlopen-style context manager yielding fixed bytes."""
 
     def __init__(self, payload: bytes):
-        self._payload = payload
+        self._buf = payload
 
-    def read(self) -> bytes:
-        return self._payload
+    def read(self, amt=None) -> bytes:
+        # DRAIN the buffer (mirrors HTTPResponse.read(amt) → b"" at EOF) so the
+        # bounded, looping reader terminates instead of re-reading forever.
+        amt = len(self._buf) if amt is None else amt
+        out, self._buf = self._buf[:amt], self._buf[amt:]
+        return out
 
     def __enter__(self) -> "_FakeResp":
         return self
@@ -327,6 +331,95 @@ def test_safe_extract_returns_source_root(tmp_path: Path):
     assert (root / "pyproject.toml").is_file()
 
 
+class _DrainResp:
+    """A read()-able that DRAINS a buffer, honouring amt and partial-read chunking.
+
+    Mirrors HTTPResponse.read(n): returns up to n bytes per call (and never more
+    than *chunk* when set — to simulate partial TCP reads), b"" at EOF."""
+
+    def __init__(self, payload: bytes, *, chunk: Optional[int] = None):
+        self._buf = payload
+        self._chunk = chunk
+
+    def read(self, amt=None) -> bytes:
+        amt = len(self._buf) if amt is None else amt
+        if self._chunk is not None:
+            amt = min(amt, self._chunk)
+        out, self._buf = self._buf[:amt], self._buf[amt:]
+        return out
+
+    def __enter__(self) -> "_DrainResp":
+        return self
+
+    def __exit__(self, *exc) -> bool:
+        return False
+
+
+def test_read_bounded_rejects_oversized_body():
+    """The network read is BOUNDED: a body larger than the cap is refused, not
+    truncated — a defence against a decompression-bomb / runaway download."""
+    with pytest.raises(RuntimeError, match="exceeds"):
+        src._read_bounded(_DrainResp(b"x" * 16), cap=8)
+
+
+def test_read_bounded_returns_body_within_cap():
+    assert src._read_bounded(_DrainResp(b"abc"), cap=1024) == b"abc"
+
+
+def test_read_bounded_rejects_oversized_body_delivered_in_chunks():
+    # HTTPResponse.read(n) may return FEWER than n bytes (partial TCP) — an
+    # oversized body delivered in small chunks must STILL be rejected, so the
+    # bound loops until cap+1 or EOF rather than trusting a single read.
+    with pytest.raises(RuntimeError, match="exceeds"):
+        src._read_bounded(_DrainResp(b"y" * 40, chunk=4), cap=8)
+
+
+def test_fetch_latest_tag_bounds_oversized_feed(tmp_path: Path, monkeypatch):
+    """The releases-feed read is BOUNDED too: a MITM/compromised endpoint that
+    streams a giant body must NOT be read whole (OOM) — it is bounded and the
+    fetch degrades to None, never crashes the process. (Cap monkeypatched tiny.)"""
+    monkeypatch.setattr(src, "MAX_FEED_BYTES", 16)
+    served = {"n": 0}
+    body = b'{"tag_name": "v9.9.9"}' + b" " * 4000
+
+    class _Resp(_DrainResp):
+        def read(self, amt=None) -> bytes:
+            out = super().read(amt)
+            served["n"] += len(out)
+            return out
+
+    s = _published(tmp_path, opener=lambda req, timeout=None: _Resp(body, chunk=8))
+    assert s._fetch_latest_tag() is None  # oversized feed bounded → swallowed, no crash
+    assert served["n"] <= 16 + 1  # never read the whole multi-KB body
+
+
+def test_safe_extract_rejects_total_size_bomb(tmp_path: Path, monkeypatch):
+    """A tarball whose DECLARED uncompressed size exceeds the total cap is refused.
+
+    We sum each member's declared size and reject BEFORE extracting, so a
+    decompression bomb cannot explode on disk. (Cap monkeypatched tiny so a normal
+    tarball trips it — no need to craft a real multi-hundred-MB archive.)"""
+    monkeypatch.setattr(src, "MAX_EXTRACT_TOTAL_BYTES", 1)
+    payload = _make_release_tarball(tmp_path / "build")
+    tb = tmp_path / "dl.tar.gz"
+    tb.write_bytes(payload)
+    dest = tmp_path / "out"
+    dest.mkdir()
+    with pytest.raises(RuntimeError, match="total"):
+        src.safe_extract(tb, dest)
+
+
+def test_safe_extract_rejects_oversized_member(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(src, "MAX_EXTRACT_MEMBER_BYTES", 1)
+    payload = _make_release_tarball(tmp_path / "build")
+    tb = tmp_path / "dl.tar.gz"
+    tb.write_bytes(payload)
+    dest = tmp_path / "out"
+    dest.mkdir()
+    with pytest.raises(RuntimeError, match="member"):
+        src.safe_extract(tb, dest)
+
+
 def test_safe_extract_rejects_path_traversal(tmp_path: Path):
     evil = tmp_path / "evil.tar.gz"
     with tarfile.open(evil, "w:gz") as tf:
@@ -437,13 +530,61 @@ def test_published_update_cleans_up_workdir(tmp_path: Path):
     assert created and not Path(created[0]).exists()  # temp checkout removed
 
 
-def test_published_update_smoke_failure_does_not_stamp(tmp_path: Path):
+def test_published_update_smoke_failure_stamps_to_stop_renudge(tmp_path: Path):
+    # pip succeeded (the new version IS installed); only the smoke failed. The
+    # marker advances to the new version so installed()==available() and the user
+    # is no longer perpetually re-nudged to reinstall a version they already have —
+    # while accepted stays False and the loud WARNING keeps the failure visible.
     s = _stale_published(tmp_path)
     runner = FakeRunner(portable=(0, ""), suite=(0, ""), install=(0, ""), smoke=(1, "ImportError"))
     res = core.self_update_published(s, runner=runner, workdir_factory=_wd_factory(tmp_path))
     assert res.accepted is False
-    assert src.read_marker(s.marker_path)["version"] == "0.1.0"  # NOT advanced
+    assert src.read_marker(s.marker_path)["version"] == "1.0.1"  # advanced → no re-nudge
+    assert core.check_for_update(s).stale is False
     assert any("smoke FAILED" in m for m in res.messages)
+
+
+def test_smoke_failure_writes_persistent_broken_marker(tmp_path: Path):
+    # A smoke-failed install must stay LOUD: stamping the version marker silences
+    # the stale-version nudge, so a SEPARATE broken-install marker keeps the
+    # failure visible. session_note surfaces a DISTINCT, persistent warning in a
+    # FRESH subsequent session — not just the one-time WARNING line.
+    s = _stale_published(tmp_path)
+    runner = FakeRunner(portable=(0, ""), suite=(0, ""), install=(0, ""), smoke=(1, "ImportError"))
+    core.self_update_published(s, runner=runner, workdir_factory=_wd_factory(tmp_path))
+
+    broken = tmp_path / "broken-install-marker.json"
+    assert src.read_broken(broken) is not None
+    assert src.read_broken(broken)["version"] == "1.0.1"
+
+    # a brand-new session (fresh resolve) — the stale nudge is gone (marker
+    # advanced) but the broken-install warning persists
+    note = core.session_note(resolver=lambda: _published(
+        tmp_path, opener=_opener(_make_release_tarball(tmp_path / "b2"))
+    ))
+    assert note is not None
+    assert "BROKEN" in note
+
+
+def test_broken_marker_cleared_on_successful_update(tmp_path: Path):
+    s = _stale_published(tmp_path)
+    core.self_update_published(
+        s,
+        runner=FakeRunner(portable=(0, ""), suite=(0, ""), install=(0, ""), smoke=(1, "x")),
+        workdir_factory=_wd_factory(tmp_path),
+    )
+    broken = tmp_path / "broken-install-marker.json"
+    assert src.read_broken(broken) is not None
+
+    # a subsequent forced reinstall whose smoke PASSES clears the broken marker
+    res = core.self_update_published(
+        s,
+        force=True,
+        runner=FakeRunner(portable=(0, ""), suite=(0, ""), install=(0, ""), smoke=(0, "tide 1.0.1")),
+        workdir_factory=_wd_factory(tmp_path),
+    )
+    assert res.accepted is True
+    assert src.read_broken(broken) is None
 
 
 # --- rollback ---------------------------------------------------------------
@@ -460,6 +601,22 @@ def test_rollback_replays_pinned_command_and_smokes(tmp_path: Path):
     assert res.ok is True
     assert res.target == "0.1.0"
     assert runner.ran("pip")
+
+
+def test_rollback_clears_broken_install_marker(tmp_path: Path):
+    # A successful rollback recovers a working install → the broken-install marker
+    # must be cleared so session_note stops warning.
+    marker = tmp_path / "rollback.json"
+    src.write_rollback(
+        marker, "0.1.0",
+        ["/py", "-m", "pip", "install", "--upgrade", "git+https://github.com/tide-tools/tide@v0.1.0"],
+    )
+    broken = tmp_path / "broken-install-marker.json"
+    src.write_broken(broken, "1.0.1", "post-install smoke check failed")
+    runner = FakeRunner(install=(0, ""), smoke=(0, "tide 0.1.0"))
+    res = core.rollback(marker, runner=runner)
+    assert res.ok is True
+    assert src.read_broken(broken) is None
 
 
 def test_rollback_no_marker_refuses(tmp_path: Path):

@@ -39,10 +39,13 @@ from .source import (
     PublishedChannelSource,
     Revision,
     VersionSource,
+    clear_broken,
     prefers_newer_only,
+    read_broken,
     read_rollback,
     resolve_source,
     revision_is_stale,
+    write_broken,
     write_rollback,
 )
 
@@ -105,7 +108,24 @@ def run_regression_gate(
     is False we drop to a portable-only gate (weaker — say so). If pytest cannot
     be invoked at all, that is recorded as a suite FAILURE (fail-loud).
     """
-    source_dir = Path(getattr(source, "source_dir"))
+    source_dir = getattr(source, "source_dir", None)
+    if source_dir is None:
+        # No in-place checkout to gate (a raw published source). The gate cannot
+        # run against it — refuse RED (never crash, never silently pass). The
+        # supported path materializes the artifact into a checkout first (see
+        # self_update_published).
+        return GateResult(
+            portable_ok=False,
+            suite_ok=False,
+            suite_ran=False,
+            messages=[
+                "cannot gate {0}: no local source checkout — a published source "
+                "must be materialized first (see self_update_published)".format(
+                    source.name()
+                )
+            ],
+        )
+    source_dir = Path(source_dir)
     python_exe = getattr(source, "python_exe")
     env = _source_env(source_dir)
     result = GateResult(portable_ok=False, suite_ok=False, suite_ran=False)
@@ -362,6 +382,24 @@ def _gate_then_install(
         [getattr(source, "python_exe"), "-m", "tide", "version"], None, None
     )
     if smoke_rc != 0 or "tide" not in smoke_out:
+        # The install PHYSICALLY happened (pip succeeded) — the new version IS on
+        # disk, it just fails to smoke. STAMP the marker anyway so installed() reads
+        # the new version: otherwise the marker stays at the OLD version and every
+        # session re-nudges "update available" to a version already installed (a
+        # perpetual loop). Stamping only silences the re-nudge for THIS version; a
+        # genuinely newer release still nudges. The loud WARNING + rollback guidance
+        # keep the failure visible — accepted stays False (not a clean success).
+        if hasattr(source, "record_install"):
+            source.record_install()
+        # Keep the failure LOUD beyond this one message: a separate broken-install
+        # marker makes session_note warn EVERY subsequent session (the stamped
+        # version marker no longer reads stale, so the nudge alone would go silent).
+        broken = _broken_path_for(source)
+        if broken is not None:
+            try:
+                write_broken(broken, status.available.version, "post-install smoke check failed")
+            except Exception:
+                pass  # surfacing the failure must never itself block the flow
         res.messages.append(
             "WARNING — install applied but post-install smoke FAILED "
             "(roll back with 'tide self-update --rollback')"
@@ -370,9 +408,25 @@ def _gate_then_install(
         return res
 
     recorded = source.record_install() if hasattr(source, "record_install") else status.available
+    # A clean install recovered health → clear any prior broken-install marker.
+    broken = _broken_path_for(source)
+    if broken is not None:
+        clear_broken(broken)
     res.accepted = True
     res.messages.append("accepted — installed + stamped at {0}".format(recorded))
     return res
+
+
+def _broken_path_for(source: VersionSource) -> Optional[Path]:
+    """The broken-install marker path for *source* (sibling of its install marker).
+
+    Derived from the source's ``marker_path`` so it lands in the same ``$TIDE_HOME``
+    that :func:`tide.update.source.default_broken_path` (used by session_note)
+    resolves to. None when the source carries no marker_path (a bare test fake)."""
+    marker = getattr(source, "marker_path", None)
+    if marker is None:
+        return None
+    return Path(marker).parent / "broken-install-marker.json"
 
 
 def _record_rollback(source: VersionSource, res: SelfUpdateResult) -> None:
@@ -436,6 +490,9 @@ def rollback(marker_path: Path, *, runner: Runner = _default_runner) -> Rollback
         return res
 
     res.ok = True
+    # A working rollback recovered health → clear the broken-install marker (sibling
+    # of the rollback marker, same $TIDE_HOME) so session_note stops warning.
+    clear_broken(Path(marker_path).parent / "broken-install-marker.json")
     res.messages.append("rolled back — reinstalled {0}".format(target or "previous version"))
     return res
 
@@ -455,6 +512,19 @@ def session_note(resolver: Callable[[], Optional[VersionSource]] = resolve_sourc
         source = resolver()
         if source is None:
             return None
+        # A broken-install marker takes precedence and PERSISTS: a smoke-failed
+        # install must keep nagging every session (the stale nudge alone goes
+        # silent once the version marker is stamped) until rollback/reinstall.
+        broken = _broken_path_for(source)
+        if broken is not None:
+            data = read_broken(broken)
+            if data:
+                return (
+                    "  ✗ tide install is BROKEN: version {0} failed its post-install "
+                    "smoke check — run 'tide self-update --rollback'".format(
+                        data.get("version", "?")
+                    )
+                )
         status = check_for_update(source)
         if not status.stale:
             return None

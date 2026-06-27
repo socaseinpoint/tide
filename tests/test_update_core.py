@@ -44,7 +44,10 @@ class FakeSource:
         return [self.python_exe, "-m", "pip", "install", "--upgrade", str(self.source_dir)]
 
     def record_install(self) -> Revision:
+        # Faithful to a real marker: stamping makes installed() read the new
+        # revision, so a subsequent staleness check reads "current".
         self.recorded.append(self.available_rev)
+        self.installed_rev = self.available_rev
         return self.available_rev
 
 
@@ -126,6 +129,28 @@ def test_gate_no_suite_waives_suite_but_keeps_portable():
     assert not runner.ran("pytest")
 
 
+def test_gate_on_source_without_checkout_is_red_not_crash():
+    """Gating a source with no ``source_dir`` (a raw PublishedChannelSource) must
+    NOT raise AttributeError — it returns RED with a clear message.
+
+    A published source has no in-place checkout to run the suite against; the
+    supported path materializes the artifact first (see self_update_published). A
+    misuse here must refuse loudly (RED), never crash and never silently pass.
+    """
+    from tide.update.source import PublishedChannelSource
+
+    raw = PublishedChannelSource(
+        python_exe="/py",
+        marker_path=Path("/m"),
+        cache_path=Path("/c"),
+        rollback_path=Path("/r"),
+    )
+    gate = core.run_regression_gate(raw, runner=FakeRunner())
+    assert gate.ok is False
+    assert gate.suite_ran is False
+    assert any("no local source" in m for m in gate.messages)
+
+
 # --- self_update flow -------------------------------------------------------
 
 
@@ -177,13 +202,21 @@ def test_self_update_install_failure_is_not_accepted():
     assert source.recorded == []  # but never stamped
 
 
-def test_self_update_smoke_failure_warns_and_does_not_stamp():
+def test_self_update_smoke_failure_warns_and_stamps_to_stop_renudge():
+    # The install PHYSICALLY happened (pip succeeded) — the freshly installed code
+    # IS the new version, it just fails to smoke. Stamping the marker makes
+    # installed()==available() so session-start stops nudging the user to reinstall
+    # a version they already have (the old behaviour left a stale marker → a
+    # perpetual re-nudge loop). accepted stays False + the loud WARNING preserves
+    # the failure signal.
     source = _stale_source()
     runner = FakeRunner(portable=(0, ""), suite=(0, ""), install=(0, ""), smoke=(1, "ImportError"))
     res = core.self_update(source, runner=runner)
     assert res.accepted is False
-    assert source.recorded == []
     assert any("smoke FAILED" in m for m in res.messages)
+    # marker stamped → the source no longer reads stale → no perpetual re-nudge
+    assert source.recorded == [Revision("0.2.0", "newbbbb")]
+    assert core.check_for_update(source).stale is False
 
 
 def test_self_update_no_suite_path_skips_pytest():
