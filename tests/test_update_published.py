@@ -31,7 +31,9 @@ class _FakeResp:
     def __init__(self, payload: bytes):
         self._payload = payload
 
-    def read(self) -> bytes:
+    def read(self, amt=None) -> bytes:
+        # Bounded reads pass an amt; the test payloads are tiny (< amt), so the
+        # whole body is returned either way (mirrors HTTPResponse.read(amt)).
         return self._payload
 
     def __enter__(self) -> "_FakeResp":
@@ -325,6 +327,53 @@ def test_safe_extract_returns_source_root(tmp_path: Path):
     dest.mkdir()
     root = src.safe_extract(tb, dest)
     assert (root / "pyproject.toml").is_file()
+
+
+def test_read_bounded_rejects_oversized_body():
+    """The network read is BOUNDED: a body larger than the cap is refused, not
+    truncated — a defence against a decompression-bomb / runaway download."""
+
+    class _Big:
+        def read(self, amt=None):
+            return b"x" * (amt if amt else 16)
+
+    with pytest.raises(RuntimeError, match="exceeds"):
+        src._read_bounded(_Big(), cap=8)
+
+
+def test_read_bounded_returns_body_within_cap():
+    class _Small:
+        def read(self, amt=None):
+            return b"abc"
+
+    assert src._read_bounded(_Small(), cap=1024) == b"abc"
+
+
+def test_safe_extract_rejects_total_size_bomb(tmp_path: Path, monkeypatch):
+    """A tarball whose DECLARED uncompressed size exceeds the total cap is refused.
+
+    We sum each member's declared size and reject BEFORE extracting, so a
+    decompression bomb cannot explode on disk. (Cap monkeypatched tiny so a normal
+    tarball trips it — no need to craft a real multi-hundred-MB archive.)"""
+    monkeypatch.setattr(src, "MAX_EXTRACT_TOTAL_BYTES", 1)
+    payload = _make_release_tarball(tmp_path / "build")
+    tb = tmp_path / "dl.tar.gz"
+    tb.write_bytes(payload)
+    dest = tmp_path / "out"
+    dest.mkdir()
+    with pytest.raises(RuntimeError, match="total"):
+        src.safe_extract(tb, dest)
+
+
+def test_safe_extract_rejects_oversized_member(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(src, "MAX_EXTRACT_MEMBER_BYTES", 1)
+    payload = _make_release_tarball(tmp_path / "build")
+    tb = tmp_path / "dl.tar.gz"
+    tb.write_bytes(payload)
+    dest = tmp_path / "out"
+    dest.mkdir()
+    with pytest.raises(RuntimeError, match="member"):
+        src.safe_extract(tb, dest)
 
 
 def test_safe_extract_rejects_path_traversal(tmp_path: Path):

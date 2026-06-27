@@ -436,20 +436,61 @@ def _detect_homebrew(python_exe: str) -> bool:
         return False
 
 
+# Bounds on the update artifact — a tide sdist is tiny (well under a megabyte), so
+# these caps are generous-but-finite: enough headroom for honest growth, small
+# enough to refuse a runaway download / decompression bomb on the update path.
+MAX_DOWNLOAD_BYTES = 256 * 1024 * 1024  # cap on bytes read from the network
+MAX_EXTRACT_MEMBER_BYTES = 256 * 1024 * 1024  # cap on any single member's declared size
+MAX_EXTRACT_TOTAL_BYTES = 512 * 1024 * 1024  # cap on the total declared uncompressed size
+
+
+def _read_bounded(resp: object, cap: int) -> bytes:
+    """Read at most *cap* bytes from *resp*; REFUSE (don't truncate) an oversized body.
+
+    Reads ``cap + 1`` so an over-cap body is detectable, then rejects loudly — a
+    runaway/oversized download on the update path must fail, not silently truncate
+    into a corrupt archive.
+    """
+    data = resp.read(cap + 1)  # type: ignore[attr-defined]
+    if len(data) > cap:
+        raise RuntimeError(
+            "release artifact exceeds {0} bytes — refusing "
+            "(possible decompression bomb / runaway download)".format(cap)
+        )
+    return data
+
+
 def safe_extract(tarball: Path, dest: Path) -> Path:
-    """Extract *tarball* into *dest* (path-traversal-guarded) and return the source root.
+    """Extract *tarball* into *dest* (path-traversal- AND size-guarded); return the source root.
 
     A GitHub release/source tarball extracts to a single top-level dir holding the
-    project (pyproject + tests). We reject any member that would escape *dest*
-    (defence-in-depth on top of the 3.12 ``data`` filter) and return the first
-    extracted dir carrying a ``pyproject.toml``.
+    project (pyproject + tests). Before extracting we reject any member that would
+    escape *dest* (defence-in-depth on top of the 3.12 ``data`` filter) OR whose
+    declared uncompressed size blows the per-member / total caps (a decompression
+    bomb) — refusing on the DECLARED size means we never write the bomb to disk.
+    Returns the first extracted dir carrying a ``pyproject.toml``.
     """
     dest = Path(dest).resolve()
     with tarfile.open(tarball, "r:gz") as tf:
+        total = 0
         for member in tf.getmembers():
             target = (dest / member.name).resolve()
             if target != dest and dest not in target.parents:
                 raise RuntimeError("unsafe tar member escapes dest: {0}".format(member.name))
+            size = getattr(member, "size", 0) or 0
+            if size > MAX_EXTRACT_MEMBER_BYTES:
+                raise RuntimeError(
+                    "tar member {0} declares {1} bytes > per-member cap {2} — refusing "
+                    "(possible decompression bomb)".format(
+                        member.name, size, MAX_EXTRACT_MEMBER_BYTES
+                    )
+                )
+            total += size
+            if total > MAX_EXTRACT_TOTAL_BYTES:
+                raise RuntimeError(
+                    "tar extraction exceeds total cap {0} bytes — refusing "
+                    "(possible decompression bomb)".format(MAX_EXTRACT_TOTAL_BYTES)
+                )
         tf.extractall(dest, filter="data")
     for child in sorted(dest.iterdir()):
         if child.is_dir() and (child / "pyproject.toml").is_file():
@@ -564,7 +605,7 @@ class PublishedChannelSource:
         tarball = workdir / "tide-{0}.tar.gz".format(tag.lstrip("v"))
         req = urllib.request.Request(self.tarball_url(tag), headers={"User-Agent": _USER_AGENT})
         with self.opener(req, timeout=NETWORK_TIMEOUT_S) as resp:
-            tarball.write_bytes(resp.read())
+            tarball.write_bytes(_read_bounded(resp, MAX_DOWNLOAD_BYTES))
         return safe_extract(tarball, workdir)
 
     # -- the 24h feed cache --------------------------------------------------
