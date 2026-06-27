@@ -1,27 +1,22 @@
 # Homebrew formula for tide — simplified, synchronous orchestration machine.
 #
-# Distribution channel: Homebrew tap.
+# Distribution channel: Homebrew tap (installs the GitHub source tarball — no PyPI).
 # Tap this formula with:
-#   brew tap tide-project/tide https://github.com/tide-project/tide
-#   brew install tide-project/tide/tide
+#   brew tap tide-cli/tide https://github.com/tide-cli/homebrew-tide
+#   brew install tide-cli/tide/tide
 #
-# TODO(publish): Before a real release —
-#   1. Publish the wheel to PyPI: python -m build && twine upload dist/*
-#   2. Replace the url below with the real PyPI sdist URL (e.g.
-#      https://files.pythonhosted.org/packages/.../tide-0.1.0.tar.gz).
-#   3. Compute sha256: shasum -a 256 dist/tide-0.1.0.tar.gz
-#   4. Replace the sha256 PLACEHOLDER below with the real digest.
-#   Publishing and token rotation are human-gated — do NOT automate step 1.
+# The url is the GitHub release tarball for the tagged version; sha256 is the
+# digest of that tarball. To cut a new version: tag vX.Y.Z, push, then update
+# url + sha256 (shasum -a 256 of the archive tarball) and the test version below.
 
 class Tide < Formula
   include Language::Python::Virtualenv
 
   desc "Simplified, synchronous, human-driven orchestration machine (pure CLI + markdown)"
-  homepage "https://github.com/tide-project/tide"
+  homepage "https://github.com/tide-cli/tide"
 
-  # TODO(publish): fill url and sha256 from the released PyPI sdist tarball.
-  url "https://files.pythonhosted.org/packages/source/t/tide/tide-0.1.0.tar.gz"
-  sha256 "PLACEHOLDER_SHA256_FILL_FROM_RELEASED_TARBALL"  # TODO(publish): replace before release
+  url "https://github.com/tide-cli/tide/archive/refs/tags/v0.1.0.tar.gz"
+  sha256 "PLACEHOLDER_SHA256_FILL_AFTER_TAG"  # filled from the v0.1.0 tarball at publish
   license "MIT"
 
   depends_on "python@3.12"

@@ -30,8 +30,8 @@ classifiers = [
 
 # TODO(publish): update Source to the real public repository URL before PyPI release.
 [project.urls]
-Source = "https://github.com/tide-project/tide"
-Changelog = "https://github.com/tide-project/tide/blob/main/QUICKSTART.md"
+Source = "https://github.com/tide-cli/tide"
+Changelog = "https://github.com/tide-cli/tide/blob/main/QUICKSTART.md"
 
 [project.optional-dependencies]
 test = ["pytest>=7.0"]

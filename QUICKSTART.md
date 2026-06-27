@@ -33,8 +33,8 @@ tide --version
 ### Via Homebrew tap (once the release tarball is published)
 
 ```bash
-brew tap tide-project/tide https://github.com/tide-project/tide
-brew install tide-project/tide/tide
+brew tap tide-cli/tide https://github.com/tide-cli/tide
+brew install tide-cli/tide/tide
 tide --version
 ```
 
