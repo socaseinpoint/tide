@@ -794,3 +794,74 @@ class TestBaseline:
         text = paths.canon_file(tmp_project).read_text(encoding="utf-8")
         assert text.count("reality-rev:") == 1
         assert reality.parse_baseline(tmp_project) == rr2
+
+
+# ---------------------------------------------------------------------------
+# F1: _ls_files fails loud on git error (not silent empty set)
+# ---------------------------------------------------------------------------
+
+def test_ls_files_raises_oserror_on_called_process_error(tmp_path, monkeypatch):
+    """F1: CalledProcessError from git must surface as OSError, not silent empty set."""
+    def fail(*args, **kwargs):
+        raise subprocess.CalledProcessError(128, "git", b"", b"fatal: not a git repo")
+    monkeypatch.setattr(subprocess, "run", fail)
+    with pytest.raises(OSError):
+        reality._ls_files(tmp_path, ["*.py"])
+
+
+def test_ls_files_raises_oserror_on_file_not_found(tmp_path, monkeypatch):
+    """F1: FileNotFoundError (git not installed) must surface as OSError."""
+    def fail(*args, **kwargs):
+        raise FileNotFoundError("git not found")
+    monkeypatch.setattr(subprocess, "run", fail)
+    with pytest.raises(OSError):
+        reality._ls_files(tmp_path, ["*.py"])
+
+
+def test_ls_files_emits_stderr_advisory_on_git_failure(tmp_path, monkeypatch, capsys):
+    """F1: a stderr advisory must be emitted when git fails so degradation is visible."""
+    def fail(*args, **kwargs):
+        raise FileNotFoundError("git not found")
+    monkeypatch.setattr(subprocess, "run", fail)
+    with pytest.raises(OSError):
+        reality._ls_files(tmp_path, ["*.py"])
+    err = capsys.readouterr().err
+    assert "tide:" in err
+    assert "reality" in err
+
+
+def test_ls_files_empty_globs_returns_empty_set_without_git(tmp_path, monkeypatch):
+    """F1: empty globs short-circuit before any git call — still returns set()."""
+    def fail(*args, **kwargs):
+        raise AssertionError("subprocess.run must not be called for empty globs")
+    monkeypatch.setattr(subprocess, "run", fail)
+    result = reality._ls_files(tmp_path, [])
+    assert result == set()
+
+
+# ---------------------------------------------------------------------------
+# F10: _file_fingerprint re-raises read_bytes OSError with file path context
+# ---------------------------------------------------------------------------
+
+def test_file_fingerprint_oserror_includes_path_context_on_read_bytes_failure(
+    tmp_path, monkeypatch
+):
+    """F10: OSError from the read_bytes fallback must include the file path in the message."""
+    from pathlib import Path as _Path
+
+    p = tmp_path / "bad.py"
+    # Write invalid UTF-8 bytes so read_text raises UnicodeDecodeError → fallback
+    p.write_bytes(b"\xff\xfe\x00\x01 binary content that is not valid utf-8")
+
+    original_read_bytes = _Path.read_bytes
+
+    def failing_read_bytes(self):
+        if self == p:
+            raise OSError("simulated I/O failure during read_bytes")
+        return original_read_bytes(self)
+
+    monkeypatch.setattr(_Path, "read_bytes", failing_read_bytes)
+
+    with pytest.raises(OSError) as exc_info:
+        reality._file_fingerprint(p)
+    assert str(p) in str(exc_info.value)

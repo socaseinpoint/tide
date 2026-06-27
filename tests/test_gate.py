@@ -655,3 +655,61 @@ def test_gate_no_self_drift_when_canon_covers_matches_canon_itself(tmp_project):
     rr = reality.parse_baseline(tmp_project)
     reality.stamp_canon_baseline(tmp_project)
     assert reality.parse_baseline(tmp_project) == rr
+
+
+# ---------------------------------------------------------------------------
+# F1 (gate integration): git ls-files failure surfaces as oracle-error (2)
+# ---------------------------------------------------------------------------
+
+def test_gate_oracle_error_when_git_ls_files_raises(tmp_project, monkeypatch):
+    """F1: _ls_files raising OSError (git infra broken) must yield code 2, not silent 0.
+
+    Before the fix _ls_files swallowed git errors and returned an empty set,
+    causing reality_rev to compute a stable empty hash — both stamp and current
+    matched, so gate.decide returned 0 (current) even though the axis was dead.
+    After the fix the OSError propagates and gate.decide catches it as oracle-error.
+    """
+    from tide.cannon import reality as _reality
+    _write_state_covers(tmp_project, ["*.md"])
+
+    # Force the git-mode branch so _ls_files is actually invoked
+    monkeypatch.setattr(_reality, "_is_git_repo", lambda root: True)
+
+    def failing_ls_files(root, globs):
+        raise OSError("git ls-files failed (simulated infra failure)")
+
+    monkeypatch.setattr(_reality, "_ls_files", failing_ls_files)
+
+    code, reasons = gate.decide(tmp_project)
+    assert code == 2, (
+        "git infra failure must yield oracle-error (2), not silent pass (0); "
+        "got code={0}, reasons={1}".format(code, reasons)
+    )
+    assert any("oracle-error" in r for r in reasons)
+
+
+# ---------------------------------------------------------------------------
+# P2-1: gate.decide bare except logs traceback to stderr
+# ---------------------------------------------------------------------------
+
+def test_gate_unexpected_exception_logs_traceback_and_returns_2(
+    tmp_project, monkeypatch, capsys
+):
+    """P2-1: unexpected exceptions log full traceback to stderr; still return code 2.
+
+    Before the fix the bare except just returned code 2 with the exc string —
+    a KeyError from a parsing bug was indistinguishable from 'CANON unreadable'.
+    After the fix the traceback is printed to stderr so bugs are identifiable.
+    """
+    def explode(root):
+        raise KeyError("internal_parse_bug")
+
+    monkeypatch.setattr(gate, "_stale_checks", explode)
+
+    code, reasons = gate.decide(tmp_project)
+    assert code == 2
+    assert any("oracle-error (unexpected)" in r for r in reasons)
+
+    err = capsys.readouterr().err
+    assert "Traceback" in err
+    assert "KeyError" in err
