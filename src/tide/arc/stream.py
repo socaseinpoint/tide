@@ -295,8 +295,14 @@ def reopen(root: Path, ref: str, goal_slug: Optional[str] = None) -> Path:
         )
     open_name = slug.strip_marker(entry.name)
     opened = entry.parent / open_name
+    # F6 ordering fix: write "status: active" on the CURRENT (closed) passport
+    # path BEFORE renaming.  A crash between the write and the rename leaves the
+    # entry closed by name but with status=active — that is recoverable because
+    # reopen resolves by closed=True name, finds the entry, and renames it on
+    # retry.  Writing AFTER the rename risks a crash that leaves an open-named
+    # dir with status=done, causing has_worktree and land to misread the state.
+    fields.set_field(passport_path(entry), "status", "active")
     entry.rename(opened)
-    fields.set_field(passport_path(opened), "status", "active")
     return opened
 
 

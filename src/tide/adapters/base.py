@@ -18,6 +18,7 @@ build the exact command(s) WITHOUT executing — used by the tests and by a
 
 from __future__ import annotations
 
+import os
 import re
 import tempfile
 from abc import ABC, abstractmethod
@@ -56,14 +57,27 @@ def safe_title(title: str) -> str:
 
 
 def persist_seed(seed: str, title: str) -> Path:
-    """Write *seed* to a temp file and return its path (for adapters that pass a file).
+    """Write *seed* to a UNIQUE temp file and return its path.
 
-    A new terminal can be slow to accept a multi-KB pasted prompt; writing the seed
-    to a stable file lets an adapter hand the session a path to read instead. Lives
-    under the OS temp dir so it never pollutes a project.
+    Each call returns a distinct file so concurrent spawns for the same arc
+    title do not clobber each other's seed.  The title is kept as a filename
+    hint (prefix) for human readability; uniqueness comes from mkstemp's
+    per-call suffix.  Lives under the OS temp dir so it never pollutes a project.
+
+    P2 fix: replaced the deterministic path ``tide-seed-<title>.md`` with
+    ``tempfile.mkstemp(prefix=…, suffix=.md)`` — two concurrent spawns for the
+    same arc used to silently overwrite each other's seed file.
     """
-    path = Path(tempfile.gettempdir()) / "tide-seed-{0}.md".format(safe_title(title))
-    path.write_text(seed, encoding="utf-8")
+    safe = safe_title(title)
+    fd, path_str = tempfile.mkstemp(
+        prefix="tide-seed-{0}-".format(safe),
+        suffix=".md",
+    )
+    path = Path(path_str)
+    try:
+        path.write_text(seed, encoding="utf-8")
+    finally:
+        os.close(fd)
     return path
 
 

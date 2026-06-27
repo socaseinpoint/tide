@@ -129,7 +129,21 @@ def _merge_worktree(root: Path, arc_dir: Path, ref: str) -> bool:
             "tide arc land {0}".format(ref, result.detail)
         )
     if result.landed:
-        worktree.remove(root, arc_dir)
+        # Fix 2 regression: worktree.remove can now raise WorktreeError (e.g.
+        # locked worktree on NFS, registry race).  WorktreeError is NOT a
+        # subclass of LandError/StreamError, so it would escape cmd_land's
+        # except-LandError and cli.main's except-StreamError as a raw traceback.
+        # Wrap it here — the merge already succeeded, so the message tells the
+        # operator the branch is safe and gives the manual cleanup next step.
+        try:
+            worktree.remove(root, arc_dir)
+        except worktree.WorktreeError as exc:
+            raise LandError(
+                "arc {0!r}: branch landed but worktree cleanup failed: {1}\n"
+                "  the merge succeeded — no work was lost.\n"
+                "  next: run 'git worktree remove --force <worktree-path>' "
+                "manually, then retry 'tide arc land {0}'".format(ref, exc)
+            ) from exc
         return True
     return False
 
@@ -212,8 +226,22 @@ def _land_loose(
     new_rev = stream.stamp_rev(sealed, root)
 
     if has_contract and deferred:
+        # F3/P1 ordering fix: ledger.append is the authoritative sink — write it
+        # FIRST so a crash between the two writes leaves a ledger entry that
+        # reconcile can find.  A cosmetic "deferred:" note with no ledger entry
+        # means the delta is unmerged forever and reconcile never sees it.
+        # Wrap OSError so the operator gets a clear message (the arc IS sealed;
+        # the debt just needs to be re-registered).
+        try:
+            ledger.append(root, sealed.name, deferred, new_rev)
+        except OSError as exc:
+            raise LandError(
+                "arc {0!r} is sealed but debt could not be recorded in the ledger: {1}\n"
+                "  the arc is done; retry 'tide reconcile' to re-register the debt.".format(
+                    sealed.name, exc
+                )
+            ) from exc
         model.set_field(sealed, "deferred", "{0} @ {1}".format(", ".join(deferred), new_rev))
-        ledger.append(root, sealed.name, deferred, new_rev)
     return sealed, new_rev, deferred
 
 
