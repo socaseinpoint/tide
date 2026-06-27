@@ -194,10 +194,17 @@ def create(root: Path, arc_dir: Path) -> Optional[Path]:
     if wt.exists():
         raise WorktreeError("worktree already exists at {0}".format(wt))
     _ensure_wt_ignored(root)
+    # Stamp the passport BEFORE creating the worktree (F1 ordering fix).
+    # A passport naming a not-yet-created branch is a safe intermediate — the
+    # branch is only used at land time, which hasn't happened yet.  A worktree
+    # with no passport ref is unrecoverable: land skips it and the arc seals
+    # without merging the branch, orphaning every commit on it forever.
+    fields.set_field(_passport(arc_dir), BRANCH_FIELD, branch)
     p = _git(root, "worktree", "add", "-b", branch, str(wt), check=False)
     if p.returncode != 0:
+        # Roll back the field — git refused the worktree, so no branch was made.
+        fields.set_field(_passport(arc_dir), BRANCH_FIELD, "")
         raise WorktreeError("git worktree add failed: {0}".format(p.stderr.strip()))
-    fields.set_field(_passport(arc_dir), BRANCH_FIELD, branch)
     return wt
 
 
@@ -226,15 +233,31 @@ def land(root: Path, arc_dir: Path, base: Optional[str] = None) -> LandResult:
         return LandResult(landed=False, conflict=False, branch=branch, detail="no worktree to land")
     target = base or current_branch(root)
     if current_branch(root) != target:
-        _git(root, "checkout", target)
+        # F9 (checkout wrapping): surface checkout failures as WorktreeError so
+        # the caller sees a clear message instead of a raw CalledProcessError traceback.
+        try:
+            _git(root, "checkout", target)
+        except subprocess.CalledProcessError as exc:
+            raise WorktreeError(
+                "cannot checkout {0!r} before landing {1}: {2}".format(
+                    target, branch, exc.stderr.strip() if exc.stderr else str(exc)
+                )
+            ) from exc
     p = _git(root, "merge", "--no-ff", "--no-edit", branch, check=False)
     if p.returncode != 0:
-        _git(root, "merge", "--abort", check=False)
+        # F6 (abort return code): capture --abort outcome so cleanup failures
+        # are visible in LandResult.detail, not silently swallowed.
+        abort_result = _git(root, "merge", "--abort", check=False)
+        abort_note = ""
+        if abort_result.returncode != 0:
+            abort_note = " (merge --abort also failed: {0})".format(
+                abort_result.stderr.strip()
+            )
         return LandResult(
             landed=False,
             conflict=True,
             branch=branch,
-            detail="conflict landing {0} onto {1}".format(branch, target),
+            detail="conflict landing {0} onto {1}{2}".format(branch, target, abort_note),
         )
     return LandResult(
         landed=True,
@@ -256,14 +279,27 @@ def remove(root: Path, arc_dir: Path, *, delete_branch: bool = True) -> bool:
     wt = worktree_path(root, arc_dir)
     branch = fields.read_field(_passport(arc_dir), BRANCH_FIELD) or ""
     removed = False
+
+    # F2 (check return code): if git worktree remove fails, raise rather than
+    # silently dropping an orphaned worktree — the operator must see it.
     if wt.exists():
-        _git(root, "worktree", "remove", "--force", str(wt), check=False)
+        p = _git(root, "worktree", "remove", "--force", str(wt), check=False)
+        if p.returncode != 0:
+            raise WorktreeError(
+                "git worktree remove failed: {0}".format(p.stderr.strip())
+            )
         removed = True
+
     _git(root, "worktree", "prune", check=False)
-    if delete_branch and branch:
-        _git(root, "branch", "-D", branch, check=False)
+
+    # F2 (ordering fix): clear the passport field BEFORE deleting the branch.
+    # A cleared passport with a live branch is safe (land won't be called on a
+    # removed arc); a live passport pointing to a deleted branch is permanently
+    # broken — every future land attempt hits a "branch not found" conflict.
     if branch:
         fields.set_field(_passport(arc_dir), BRANCH_FIELD, "")
+    if delete_branch and branch:
+        _git(root, "branch", "-D", branch, check=False)
     return removed
 
 

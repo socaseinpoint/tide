@@ -30,6 +30,7 @@ placeholder goals (old ``.arcs`` left many empty) and verify cold-entry resolves
 
 from __future__ import annotations
 
+import os
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -290,10 +291,17 @@ def apply_migration(plan: MigratePlan, force: bool = False) -> MigrateResult:
     # 1. scaffold .tide/ (non-destructive: existing CANON/config/state survive).
     scaffold_project(root)
 
-    # 2. arcs.
+    # 2. arcs — F8/P1 atomic copy: each arc is copied to a temp sibling first,
+    # then atomically renamed to dst.  A crash mid-copy leaves a .__tmp-… dir
+    # (ignored by plan_migration's naming pattern) rather than a partial dst.
+    # On retry, the temp is overwritten and re-renamed cleanly.
     result = MigrateResult(initialized=not plan.tide_existed)
     for src, dst in plan.arc_copies:
-        shutil.copytree(src, dst)
+        tmp_dst = dst.parent / (".__tmp-" + dst.name)
+        if tmp_dst.exists():
+            shutil.rmtree(tmp_dst)
+        shutil.copytree(src, tmp_dst)
+        os.rename(tmp_dst, dst)
         result.arcs_copied.append(dst.name)
     result.arcs_skipped = list(plan.arc_conflicts)  # force ⇒ kept-as-is
 

@@ -78,14 +78,18 @@ def new(
     text = model.contract_md(
         cslug, goal=goal, criteria=criteria, project=project, cannon_rev=cannon_rev
     )
-    cpath = model.contract_path(arc_dir)
-    _io.atomic_write(cpath, text)
-
-    # Stage an empty delta + the durable asks/ home.
+    # F7 ordering fix: write delta.md BEFORE contract.md.
+    # A delta with no contract.md → has_contract=False → the one-per-arc guard
+    # stays open → a retry of contract.new succeeds cleanly.
+    # contract.md written first but delta.md missing → has_contract=True but no
+    # delta → retry is blocked by the one-per-arc guard forever.
     dpath = model.delta_path(arc_dir)
     if not dpath.is_file():
         _io.atomic_write(dpath, "# delta — {0}\nmerged: no\n\n".format(cslug))
     model.asks_dir(arc_dir).mkdir(parents=True, exist_ok=True)
+
+    cpath = model.contract_path(arc_dir)
+    _io.atomic_write(cpath, text)
     return cpath
 
 
