@@ -126,6 +126,28 @@ def test_gate_no_suite_waives_suite_but_keeps_portable():
     assert not runner.ran("pytest")
 
 
+def test_gate_on_source_without_checkout_is_red_not_crash():
+    """Gating a source with no ``source_dir`` (a raw PublishedChannelSource) must
+    NOT raise AttributeError — it returns RED with a clear message.
+
+    A published source has no in-place checkout to run the suite against; the
+    supported path materializes the artifact first (see self_update_published). A
+    misuse here must refuse loudly (RED), never crash and never silently pass.
+    """
+    from tide.update.source import PublishedChannelSource
+
+    raw = PublishedChannelSource(
+        python_exe="/py",
+        marker_path=Path("/m"),
+        cache_path=Path("/c"),
+        rollback_path=Path("/r"),
+    )
+    gate = core.run_regression_gate(raw, runner=FakeRunner())
+    assert gate.ok is False
+    assert gate.suite_ran is False
+    assert any("no local source" in m for m in gate.messages)
+
+
 # --- self_update flow -------------------------------------------------------
 
 

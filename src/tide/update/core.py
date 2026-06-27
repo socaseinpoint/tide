@@ -105,7 +105,24 @@ def run_regression_gate(
     is False we drop to a portable-only gate (weaker — say so). If pytest cannot
     be invoked at all, that is recorded as a suite FAILURE (fail-loud).
     """
-    source_dir = Path(getattr(source, "source_dir"))
+    source_dir = getattr(source, "source_dir", None)
+    if source_dir is None:
+        # No in-place checkout to gate (a raw published source). The gate cannot
+        # run against it — refuse RED (never crash, never silently pass). The
+        # supported path materializes the artifact into a checkout first (see
+        # self_update_published).
+        return GateResult(
+            portable_ok=False,
+            suite_ok=False,
+            suite_ran=False,
+            messages=[
+                "cannot gate {0}: no local source checkout — a published source "
+                "must be materialized first (see self_update_published)".format(
+                    source.name()
+                )
+            ],
+        )
+    source_dir = Path(source_dir)
     python_exe = getattr(source, "python_exe")
     env = _source_env(source_dir)
     result = GateResult(portable_ok=False, suite_ok=False, suite_ran=False)
