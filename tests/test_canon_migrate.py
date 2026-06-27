@@ -93,6 +93,54 @@ class TestRewriteStamps:
         assert out == text
         assert n == 0
 
+    def test_anchors_rev_token_so_prefix_match_is_left_alone(self):
+        # LOW-1: 'cannon-rev' must be matched only as the stamp token, never as a
+        # prefix of an unrelated word like 'cannon-revolution'.
+        text = "the cannon-revolution was loud\nstamped at cannon-rev: deadbeef\n"
+        out, n = cm.rewrite_stamps(text)
+        assert "cannon-revolution was loud" in out  # prose prefix untouched
+        assert "canon-rev: deadbeef" in out          # real stamp rewritten
+        assert n == 1
+
+
+# ---------------------------------------------------------------------------
+# Defensive: file/symlink edge cases during scan + apply
+# ---------------------------------------------------------------------------
+
+class TestDefensiveEdges:
+    def test_file_removed_between_plan_and_apply_does_not_crash(self, tmp_path: Path):
+        # LOW-2: a rewrite target that vanishes after plan() must be skipped
+        # gracefully (no unhandled OSError), and the rename still completes.
+        root = _make_legacy_only(tmp_path)
+        extra = root / ".tide" / "cannon" / "NOTES.md"
+        extra.write_text("## Cannon journal\nside note\n", encoding="utf-8")
+        p = cm.plan(root)
+        # The vanishing happens between plan and apply.
+        extra.unlink()
+        result = cm.apply(p)  # must not raise
+        assert result.migrated is True
+        assert (root / ".tide" / "canon").is_dir()
+        assert not (root / ".tide" / "cannon").exists()
+        # The surviving file was still rewritten.
+        assert "## Canon journal" in store.read(root)
+
+    def test_symlink_in_cannon_survives_as_symlink(self, tmp_path: Path):
+        # LOW-3: a symlink inside cannon/ is carried by the rename untouched
+        # (symlink semantics preserved), never rewritten into a regular file.
+        # The link targets a file OUTSIDE cannon/ that itself carries a legacy
+        # stamp — so a non-guarded rewrite WOULD clobber the link into a regular
+        # file; the skip-symlink guard is what keeps it a symlink.
+        root = _make_legacy_only(tmp_path)
+        external = tmp_path / "external.md"
+        external.write_text("## Cannon journal\nlinked truth\n", encoding="utf-8")
+        link = root / ".tide" / "cannon" / "LINK.md"
+        link.symlink_to(external)
+        cm.apply(cm.plan(root))
+        migrated_link = root / ".tide" / "canon" / "LINK.md"
+        assert migrated_link.is_symlink()
+        # The external target is never touched by the migration.
+        assert external.read_text(encoding="utf-8") == "## Cannon journal\nlinked truth\n"
+
 
 # ---------------------------------------------------------------------------
 # Happy path: rename + rewrite

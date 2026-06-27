@@ -35,6 +35,7 @@ human must resolve it. This closes the rename-critic MEDIUM.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Tuple
@@ -42,18 +43,18 @@ from typing import List, Tuple
 from .. import io as _io, paths
 from ..arc.stream import StreamError
 
-# Legacy → canonical text rewrites. ONLY the spellings that actually occur inside a
+# Legacy → canonical stamp rewrites. ONLY the spellings that actually occur inside a
 # real ``.tide/cannon/`` dir (CANON.md / config) on the roster:
-#   * "Cannon journal"  — the append-only journal heading (## and ### forms);
-#   * "cannon-rev"      — the legacy drift-stamp field.
-# Replacing "## Cannon journal" is covered by the substring "Cannon journal" (which
-# also fixes the "### Cannon journal" sub-entry form), and neither replacement is a
-# substring of the other, so order is irrelevant. The bare word "cannon" in prose or
-# a ".tide/cannon" path is intentionally NOT rewritten.
-_TEXT_REWRITES: Tuple[Tuple[str, str], ...] = (
-    ("Cannon journal", "Canon journal"),
-    ("cannon-rev", "canon-rev"),
-)
+#   * "Cannon journal" — the append-only journal heading (## and ### forms). A plain
+#     substring rewrite; "## Cannon journal" is covered by it and so is the "###"
+#     sub-entry form. The bare word "cannon" in prose / a ".tide/cannon" path is
+#     intentionally NOT rewritten.
+#   * "cannon-rev" — the legacy drift-stamp field. Matched as a WHOLE token via word
+#     boundaries (``\bcannon-rev\b``) so it can never be hit as a prefix of an
+#     unrelated word like "cannon-revolution"; the field/value context
+#     (``cannon-rev:`` / ``cannon-rev <hash>``) ends on a non-word char and matches.
+_LEGACY_JOURNAL_HEADING = ("Cannon journal", "Canon journal")
+_CANNON_REV_RE = re.compile(r"\bcannon-rev\b")
 
 
 class CanonMigrateError(StreamError):
@@ -78,9 +79,13 @@ def rewrite_stamps(text: str) -> Tuple[str, int]:
     """
     out = text
     total = 0
-    for legacy, canonical in _TEXT_REWRITES:
-        total += out.count(legacy)
-        out = out.replace(legacy, canonical)
+    # Journal heading — plain substring (## / ### forms).
+    legacy_heading, canonical_heading = _LEGACY_JOURNAL_HEADING
+    total += out.count(legacy_heading)
+    out = out.replace(legacy_heading, canonical_heading)
+    # cannon-rev field — whole-token match, never a prefix of "cannon-revolution".
+    out, n_rev = _CANNON_REV_RE.subn("canon-rev", out)
+    total += n_rev
     return out, total
 
 
@@ -133,7 +138,9 @@ def plan(root: Path) -> CanonMigratePlan:
 
     if needs_rename:
         for child in sorted(legacy_dir.rglob("*")):
-            if not child.is_file():
+            # Skip symlinks so they are carried by the rename untouched (preserving
+            # symlink semantics) rather than rewritten into a regular file.
+            if child.is_symlink() or not child.is_file():
                 continue
             try:
                 text = child.read_text(encoding="utf-8")
@@ -198,7 +205,13 @@ def apply(p: CanonMigratePlan) -> CanonMigrateResult:
     #    leaves the legacy dir in place for an idempotent retry.
     rewritten: List[Tuple[str, int]] = []
     for file_path, _predicted in p.rewrites:
-        text = file_path.read_text(encoding="utf-8")
+        # Re-read defensively: a file may have vanished or become unreadable between
+        # plan() and now. Skip it gracefully (the rename still carries whatever
+        # remains) rather than crashing mid-migration — same guard plan() uses.
+        try:
+            text = file_path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
         new_text, n = rewrite_stamps(text)
         if n:
             _io.atomic_write(file_path, new_text)
