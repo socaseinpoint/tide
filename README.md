@@ -142,16 +142,24 @@ tide dogfoods itself — it is led as a tide project, in its own `.tide/`.
 | `status [--all]` | the STREAM board; flags unmerged canon-deltas and drift on open arcs |
 | `arc new\|open\|resume\|close\|reopen\|supersede\|status` | the numbered work stream (`new-goal` nests a substream) |
 | `candidate` | capture / list / **promote** future-work ideas (separate backlog) |
-| `canon init\|status\|merge\|rev` | durable truth; `merge` and a fresh `rev` are the truth-update path |
+| `canon init\|status\|merge\|rev\|migrate` | durable truth; `merge` + a fresh `rev` are the truth-update path; `migrate` renames a legacy `.tide/cannon`→`canon` (atomic, idempotent, refuses loudly if both exist) |
 | `contract new\|sign\|report\|proof\|accept\|close\|reopen\|state\|list\|ask\|answer` | worker→arc binding + open-questions |
 | `strictness [strict\|loose]` | per-project dispatch dial (default `strict`) |
 | `install-hooks` | merge-safe wiring of the Claude Code hooks into `.claude/settings.json` |
 | `handoff` | warm-handoff: distil chat → arc workspace, then fork |
 | `context show` | the deterministic **on-entry view**: tool-context + read-order + open arcs/candidates |
 | `terminal` | exec a clean, logged-in, seeded session **in this terminal** (`--dry-run`, `--no-skip-permissions`) |
+| `onboarding [--status]` | first-run walkthrough of the first-project loop — **pass or skip** (skip counts as passed); re-runnable any time |
+| `self-update [--check\|--rollback\|--dry-run]` | keep tide current: detect a stale install against the published release channel, run the **regression gate**, then reinstall; `--rollback` reverts the last update |
 
 The human steers; **the agent runs the module CLI**. You never type the inner
 verbs by hand.
+
+Brew/pip installs self-update from the published release channel: a session
+surfaces an update only when one is genuinely newer (never restarting running
+work), and `tide self-update` downloads the release, runs `verify --portable` +
+the suite against it, and installs **only on a green gate** — with a rollback
+marker if a regression slips through.
 
 ### Entering a project — the context-loading strategy
 

@@ -303,9 +303,9 @@ class LocalSourceCheckout:
 # shipped source — which ``tide verify --portable`` rightly forbids when the org
 # name collides with a dev's username — and (b) drift from the canonical home. The
 # fallback below is portable-safe (carries no instance token) and matches the
-# pyproject-declared org; the HEAD reconciles it with the real release org when it
-# cuts the release (the published channel then follows automatically).
-_FALLBACK_REPO = "tide-cli/tide"
+# pyproject-declared org (the real release org tide-tools/tide, reconciled at the
+# v1.0.2 cut); the published channel follows pyproject metadata at runtime.
+_FALLBACK_REPO = "tide-tools/tide"
 _GITHUB_REPO_RE = re.compile(r"github\.com[/:]([^/\s,]+)/([^/\s,#]+)")
 CACHE_TTL_S = 24 * 60 * 60  # 24h: session start does NOT hit the network every time
 NETWORK_TIMEOUT_S = 5  # short: a stale/offline feed must never hang a session

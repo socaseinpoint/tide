@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tide"
-version = "1.0.1"
+version = "1.0.2"
 description = "tide — simplified, synchronous, human-driven orchestration machine (pure CLI + markdown, no autonomy)"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -28,10 +28,9 @@ classifiers = [
   "Topic :: Utilities",
 ]
 
-# TODO(publish): update Source to the real public repository URL before PyPI release.
 [project.urls]
-Source = "https://github.com/tide-cli/tide"
-Changelog = "https://github.com/tide-cli/tide/blob/main/QUICKSTART.md"
+Source = "https://github.com/tide-tools/tide"
+Changelog = "https://github.com/tide-tools/tide/blob/main/QUICKSTART.md"
 
 [project.optional-dependencies]
 test = ["pytest>=7.0"]
