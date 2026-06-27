@@ -15,8 +15,8 @@ class Tide < Formula
   desc "Simplified, synchronous, human-driven orchestration machine (pure CLI + markdown)"
   homepage "https://github.com/socaseinpoint/tide"
 
-  url "https://github.com/socaseinpoint/tide/archive/refs/tags/v0.1.0.tar.gz"
-  sha256 "PLACEHOLDER_SHA256_FILL_AFTER_TAG"  # filled from the v0.1.0 tarball at publish
+  url "https://github.com/socaseinpoint/tide/archive/refs/tags/v1.0.1.tar.gz"
+  sha256 "PLACEHOLDER_SHA256_FILL_AFTER_TAG"  # filled from the v1.0.1 tarball at publish
   license "MIT"
 
   depends_on "python@3.12"
@@ -26,7 +26,7 @@ class Tide < Formula
   end
 
   test do
-    assert_match "tide 0.1.0", shell_output("#{bin}/tide version")
+    assert_match "tide 1.0.1", shell_output("#{bin}/tide version")
     system bin/"tide", "help"
   end
 end
