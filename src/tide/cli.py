@@ -209,6 +209,16 @@ def _register_self_update(sub) -> None:
     register_self_update(sub)
 
 
+def _register_doctor(sub) -> None:
+    # 23-tide-doctor: on-demand health/diagnostic command (python/structure/canon/
+    # hooks/install-marker/self-update channel). ON-DEMAND ONLY — never a hook, never
+    # a daemon (no-autonomy razor); the channel network probe runs solely here and is
+    # offline-tolerant + skippable (--no-network).
+    from .doctor import register as register_doctor
+
+    register_doctor(sub)
+
+
 def _register_verify(sub) -> None:
     # F7: isolated verification affordance — stage a built artifact into a temp dir,
     # serve it on an OS-assigned ephemeral port, and check it (HTTP 200 + optional
@@ -317,6 +327,7 @@ def build_parser() -> argparse.ArgumentParser:
     _register_handoff(subparsers)
     _register_migrate_arcs(subparsers)
     _register_readme(subparsers)
+    _register_doctor(subparsers)
     _register_verify(subparsers)
     _register_onboarding(subparsers)
     _register_self_update(subparsers)
