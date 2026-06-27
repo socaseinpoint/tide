@@ -149,6 +149,22 @@ def _arc_first_warnings(root: Path, role: str) -> List[str]:
     ]
 
 
+def _onboarding_nudge(root: Path) -> List[str]:
+    """First-run nudge: ONE line pointing at ``tide onboarding`` until it is passed.
+
+    Peripheral add-on (see :mod:`tide.onboarding`): lazy-imported and fully
+    defensive, so it can be deleted in a single edit (this function + its one call
+    site in :func:`render`) without touching any core session-start logic, and a
+    broken add-on never breaks a session. Silent once onboarding is marked passed.
+    """
+    try:
+        from ..onboarding import nudge
+
+        return nudge(root)
+    except Exception:
+        return []
+
+
 def render(root: Path, role: str, update_note: Optional[str] = None) -> str:
     """Render the SessionStart text: board + role reminder + drift/unmerged/arc-first warnings.
 
@@ -176,6 +192,13 @@ def render(root: Path, role: str, update_note: Optional[str] = None) -> str:
         lines.append("")
         lines.append("UPDATE")
         lines.append(update_note)
+
+    # Peripheral onboarding add-on (deletable with _onboarding_nudge above): one
+    # first-run advisory line, silent once onboarding is passed.
+    nudge_lines = _onboarding_nudge(root)
+    if nudge_lines:
+        lines.append("")
+        lines.extend(nudge_lines)
 
     return "\n".join(lines)
 
