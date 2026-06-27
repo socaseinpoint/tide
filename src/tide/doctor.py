@@ -35,13 +35,7 @@ from typing import List, Optional, Tuple
 from . import paths
 from .canon import store
 from .hooks import install
-from .update.source import (
-    LocalSourceCheckout,
-    PublishedChannelSource,
-    VersionSource,
-    default_marker_path,
-    resolve_source,
-)
+from .update.source import default_marker_path, resolve_source
 
 # Sentinel: tell "caller omitted source → resolve it" apart from "caller passed
 # source=None → there is genuinely no source" (the latter warns, no resolution).
@@ -217,33 +211,6 @@ def check_install_marker(marker_path: Optional[Path] = None) -> CheckResult:
     return CheckResult("install-marker", STATUS_OK, "install marker valid (version {0})".format(data["version"]))
 
 
-def _probe_reachable(source: VersionSource) -> Tuple[bool, str]:
-    """Best-effort reachability for *source* — offline-tolerant, never raises.
-
-    A :class:`LocalSourceCheckout` is "reachable" when its checkout dir still
-    exists (no network). A :class:`PublishedChannelSource` is probed via its own
-    network-defensive ``_latest_tag`` (cache-first, short timeout, swallows every
-    error → None); None reads as *unreachable or no releases*, a known tag as
-    *reachable*. Reusing the source's existing probe means doctor adds NO new
-    network code path.
-    """
-    if isinstance(source, LocalSourceCheckout):
-        src_dir = Path(source.source_dir)
-        if src_dir.is_dir():
-            return True, "local checkout at {0}".format(src_dir)
-        return False, "local checkout missing: {0}".format(src_dir)
-    if isinstance(source, PublishedChannelSource):
-        try:
-            tag = source._latest_tag()
-        except Exception:  # pragma: no cover — _latest_tag is already defensive
-            tag = None
-        if tag:
-            return True, "latest release {0}".format(tag)
-        return False, "no release tag resolvable"
-    # Unknown source type: report configured, do not pretend to reach it.
-    return True, "configured"
-
-
 def check_channel(*, source=_UNSET, network: bool = True) -> CheckResult:
     """Report the self-update channel: configured (and, with *network*, reachable).
 
@@ -251,8 +218,13 @@ def check_channel(*, source=_UNSET, network: bool = True) -> CheckResult:
     :func:`tide.update.source.resolve_source`; an explicit ``source=None`` means
     there is genuinely no source (a warn). With *network* False (the
     ``--no-network`` path) we report only that a source is CONFIGURED — no probe,
-    no network. With *network* True we additionally probe reachability
-    (offline-tolerant): unreachable → warn, never fail/crash.
+    no network. With *network* True we ask the source's PUBLIC
+    :meth:`tide.update.source.VersionSource.probe_reachable` (which may touch the
+    network and refresh the 24h feed cache — only under this explicit call): the
+    contract is offline-tolerant, so unreachable → warn. We do NOT swallow a
+    *broken* probe silently — a probe that violates the contract by raising is
+    reported as a warn naming the error (a future rename of the public method
+    surfaces as a failing contract test, not a misleading "unreachable").
     """
     src = resolve_source() if source is _UNSET else source
     if src is None:
@@ -264,7 +236,12 @@ def check_channel(*, source=_UNSET, network: bool = True) -> CheckResult:
         return CheckResult(
             "channel", STATUS_OK, "self-update source: {0} (network probe skipped)".format(name)
         )
-    reachable, detail = _probe_reachable(src)
+    try:
+        reachable, detail = src.probe_reachable()
+    except Exception as exc:  # a misbehaving source must not crash the diagnostic
+        return CheckResult(
+            "channel", STATUS_WARN, "self-update channel probe error: {0} — {1}".format(name, exc)
+        )
     if reachable:
         return CheckResult("channel", STATUS_OK, "self-update channel reachable: {0} — {1}".format(name, detail))
     return CheckResult("channel", STATUS_WARN, "self-update channel unreachable: {0} — {1}".format(name, detail))

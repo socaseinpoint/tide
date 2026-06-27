@@ -220,10 +220,64 @@ def test_check_channel_warns_when_no_source():
     assert res.status == doctor.STATUS_WARN
 
 
+# --- the public reachability CONTRACT (doctor calls probe_reachable) --------
+
+
+class _StubSource:
+    """A minimal VersionSource: only name() + the PUBLIC probe_reachable() contract.
+
+    Proves doctor routes through the public method (not a concrete class or a
+    private internal) — a source need implement nothing else to be probed.
+    """
+
+    def __init__(self, result=None, raises: bool = False):
+        self._result = result
+        self._raises = raises
+
+    def name(self) -> str:
+        return "stub-source"
+
+    def probe_reachable(self):
+        if self._raises:
+            raise RuntimeError("boom")
+        return self._result
+
+
+def test_check_channel_uses_public_probe_contract_ok():
+    res = doctor.check_channel(source=_StubSource((True, "all good")))
+    assert res.status == doctor.STATUS_OK
+    assert "all good" in res.detail
+
+
+def test_check_channel_uses_public_probe_contract_unreachable():
+    res = doctor.check_channel(source=_StubSource((False, "nope")))
+    assert res.status == doctor.STATUS_WARN
+    assert "nope" in res.detail
+
+
+def test_check_channel_warns_not_crashes_when_probe_raises():
+    # A source whose PUBLIC probe violates the contract by raising must degrade to
+    # a WARN naming the error — never crash the diagnostic.
+    res = doctor.check_channel(source=_StubSource(raises=True))
+    assert res.status == doctor.STATUS_WARN
+    assert "boom" in res.detail
+
+
+def test_concrete_sources_implement_the_public_probe():
+    # Guard the contract at the source side: both shipped sources expose the public
+    # method, so a rename surfaces as an interface/test error, not a silent swallow.
+    from tide.update.source import LocalSourceCheckout as _Local
+    from tide.update.source import PublishedChannelSource as _Pub
+
+    assert callable(getattr(_Local, "probe_reachable", None))
+    assert callable(getattr(_Pub, "probe_reachable", None))
+
+
 # --- aggregate report + exit-code contract ---------------------------------
 
 
-def test_run_doctor_all_ok_exits_zero(tmp_project, tmp_path):
+def test_run_doctor_no_fail_exits_zero(tmp_project, tmp_path):
+    # The report may carry WARNs (no source) — what matters is that NO check FAILed.
     marker = tmp_path / "install-marker.json"
     marker.write_text(json.dumps({"version": "1.0.3"}), encoding="utf-8")
     install.install_hooks(tmp_project)
@@ -235,6 +289,7 @@ def test_run_doctor_all_ok_exits_zero(tmp_project, tmp_path):
     )
     assert report.exit_code == 0
     assert report.ok is True
+    assert not any(r.status == doctor.STATUS_FAIL for r in report.results)
     # every check produced a line
     names = {r.name for r in report.results}
     assert {"python", "structure", "canon", "hooks", "install-marker", "channel"} <= names

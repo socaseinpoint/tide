@@ -92,6 +92,14 @@ class VersionSource(Protocol):
     def install_command(self) -> List[str]:
         """The argv that (re)installs ``tide`` from this source."""
 
+    def probe_reachable(self) -> Tuple[bool, str]:
+        """Best-effort reachability of this source — ``(reachable, detail)``.
+
+        Offline-tolerant by CONTRACT: it MUST NOT raise on a network/IO failure —
+        an unreachable source reports ``(False, reason)``, never an exception. A
+        diagnostic (``tide doctor``) calls this; it must never crash a health check.
+        """
+
 
 def _version_tuple(version: str) -> Optional[Tuple[int, ...]]:
     """Parse a dotted version into a tuple of ints, or None when not all-numeric.
@@ -361,6 +369,13 @@ class LocalSourceCheckout:
         cmd.append(str(self.source_dir))
         return cmd
 
+    def probe_reachable(self) -> Tuple[bool, str]:
+        """Reachable when the source checkout still exists on disk (no network)."""
+        src_dir = Path(self.source_dir)
+        if src_dir.is_dir():
+            return True, "local checkout at {0}".format(src_dir)
+        return False, "local checkout missing: {0}".format(src_dir)
+
     def record_install(self) -> Revision:
         """Stamp the marker with ``available()`` (call AFTER an accepted install)."""
         rev = self.available()
@@ -529,6 +544,20 @@ class PublishedChannelSource:
         rev = self.available()
         write_marker(self.marker_path, rev, Path("published:" + self.repo))
         return rev
+
+    def probe_reachable(self) -> Tuple[bool, str]:
+        """Reachable when the release feed yields a tag — bounded + error-swallowing.
+
+        Reuses the SAME network-defensive path as :meth:`available`
+        (:meth:`_latest_tag`: cache-first, short timeout, every error swallowed →
+        None), so it honours the contract's offline-tolerance: ``None`` reads as
+        *unreachable or no releases*, a tag reads as *reachable*. May refresh the
+        24h feed cache — that, and any network, happen ONLY under this explicit call.
+        """
+        tag = self._latest_tag()
+        if tag:
+            return True, "latest release {0}".format(tag)
+        return False, "no release tag resolvable (offline or no releases)"
 
     def rollback_command(self) -> List[str]:
         """Pin a reinstall of the CURRENTLY-installed version (recorded pre-upgrade).
