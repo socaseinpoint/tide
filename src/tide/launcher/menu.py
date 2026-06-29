@@ -197,10 +197,15 @@ def _prism_label(p: Dict[str, str]) -> str:
 
 
 def _session_label(s: Dict[str, str]) -> str:
-    """One session row's label for the arrow picker (``slug — title (from …)``)."""
-    title = " — {0}".format(s["title"]) if s.get("title") else ""
+    """One session row's label for the arrow picker — numeric index first.
+
+    ``NN  title (from …)`` once a title exists (set by offload/handoff), else
+    ``NN  slug`` for a still-unnamed session.
+    """
+    index = s["name"].split("-", 1)[0]  # the NN prefix of NN-slug
+    label = s["title"] if s.get("title") else s["slug"]
     lineage = " (from {0})".format(s["from"]) if s.get("from") else ""
-    return "{0}{1}{2}".format(s["slug"], title, lineage)
+    return "{0}  {1}{2}".format(index, label, lineage)
 
 
 def parse_pick(raw: str, count: int):
@@ -279,7 +284,9 @@ def _resolve_session(project, prism_slug, *, session_ref, new_session, interacti
         new_label="+ new session",
     )
     if choice == select.NEW:
-        slug_, path_ = _create_session(project, prism_slug, _ask("new session name> "))
+        # No name prompt — sessions are auto-named (NN-session); the human title
+        # is written later by offload/handoff (the `title:` field).
+        slug_, path_ = _create_session(project, prism_slug, "")
         return slug_, path_, True
     chosen = sessions[choice]
     return chosen["slug"], chosen["path"], False
