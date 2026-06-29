@@ -50,13 +50,28 @@ def list_entries(root: Path) -> List[Dict[str, str]]:
     return roster.read_roster(root)
 
 
+def is_active(entry: Dict[str, str]) -> bool:
+    """True unless the entry carries ``status=archived`` (default is active)."""
+    return entry.get("status", roster.STATUS_ACTIVE) != roster.STATUS_ARCHIVED
+
+
+def active_entries(entries: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """The subset of *entries* that are active (archived projects filtered out)."""
+    return [e for e in entries if is_active(e)]
+
+
 def render_menu(entries: List[Dict[str, str]]) -> str:
-    """Render the numbered pick-list (``1) name → path``) or an empty-roster note."""
+    """Render the numbered pick-list (``1) name → path``) or an empty-roster note.
+
+    Archived entries (only ever shown via ``--all``) are tagged ``[archived]`` so
+    the human sees why a normally-hidden project is in the list.
+    """
     if not entries:
         return "(roster is empty — add a project: tide roster add <name> <path>)"
     lines = ["Pick project(s) to lead this session:"]
     for i, e in enumerate(entries, start=1):
-        lines.append("  {0}) {1} → {2}".format(i, e["name"], e["path"]))
+        tag = "" if is_active(e) else "  [archived]"
+        lines.append("  {0}) {1} → {2}{3}".format(i, e["name"], e["path"], tag))
     return "\n".join(lines)
 
 
@@ -192,10 +207,15 @@ def resolve_adapter_name(root: Path, override: Optional[str]) -> Optional[str]:
 
 def cmd_menu(args) -> int:
     """``tide menu`` — list the roster, pick N projects, launch seeded sessions."""
-    root = paths.require_tide_root()
-    entries = list_entries(root)
+    root = paths.control_home()
+    all_entries = list_entries(root)
+    include_archived = bool(getattr(args, "all", False))
+    entries = all_entries if include_archived else active_entries(all_entries)
     if not entries:
-        print(render_menu(entries))
+        if not all_entries:
+            print(render_menu([]))  # truly empty roster
+        else:
+            print("(no active projects — use `tide menu --all` to include archived)")
         return 0
 
     raw = getattr(args, "pick", None)
@@ -238,6 +258,11 @@ def register(subparsers) -> None:
         "menu", help="pick N projects from the roster and launch seeded sessions"
     )
     p.add_argument("--pick", help="non-interactive selection (e.g. '1,3' or 'all')")
+    p.add_argument(
+        "--all",
+        action="store_true",
+        help="include archived projects in the pick-list (default: active only)",
+    )
     p.add_argument("--adapter", help="terminal adapter (orca|tmux; default from settings)")
     p.add_argument("--role", help="session role (default: orchestrator)")
     p.add_argument(

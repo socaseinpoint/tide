@@ -40,6 +40,24 @@ def test_subdir_helpers_match_blueprint_layout(tmp_project):
     assert paths.strictness_file(tmp_project) == tmp_project / ".tide" / "state" / "strictness"
 
 
+def test_control_home_env_overrides_cwd(tmp_control_home, tmp_path, monkeypatch):
+    # $TIDE_HOME lets `tide` resolve the control-home from anywhere — even a
+    # dir with no .tide/ ancestor.
+    monkeypatch.setenv("TIDE_HOME", str(tmp_control_home))
+    assert paths.control_home(tmp_path) == tmp_control_home.resolve()
+
+
+def test_control_home_falls_back_to_climb_when_env_absent(tmp_control_home, monkeypatch):
+    monkeypatch.delenv("TIDE_HOME", raising=False)
+    assert paths.control_home(tmp_control_home) == tmp_control_home.resolve()
+
+
+def test_control_home_env_pointing_at_missing_dir_raises(tmp_path, monkeypatch):
+    monkeypatch.setenv("TIDE_HOME", str(tmp_path / "does-not-exist"))
+    with pytest.raises(FileNotFoundError):
+        paths.control_home(tmp_path)
+
+
 def test_control_home_detected(tmp_control_home):
     assert paths.is_control_home(tmp_control_home) is True
     assert paths.roster_file(tmp_control_home).is_file()

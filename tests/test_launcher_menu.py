@@ -45,6 +45,51 @@ def test_render_menu_empty():
     assert "roster is empty" in menu.render_menu([])
 
 
+def test_active_entries_filters_archived():
+    entries = [
+        {"name": "a", "path": "/a"},
+        {"name": "b", "path": "/b", "status": "archived"},
+        {"name": "c", "path": "/c"},
+    ]
+    assert menu.active_entries(entries) == [entries[0], entries[2]]
+
+
+def test_render_menu_marks_archived_when_shown():
+    out = menu.render_menu([{"name": "old", "path": "/p/old", "status": "archived"}])
+    assert "[archived]" in out
+
+
+def test_cli_menu_hides_archived_by_default(home_with_project, monkeypatch, capsys):
+    home, proj = home_with_project
+    roster.add(home, "old", str(proj), status="archived")
+    monkeypatch.chdir(home)
+    rc = cli.main(["menu", "--pick", "1", "--adapter", "tmux", "--dry-run"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    # pick #1 is the active project; archived 'old' is not offered
+    assert "proj" in out
+    assert "old" not in out
+
+
+def test_cli_menu_all_includes_archived(home_with_project, monkeypatch, capsys):
+    home, proj = home_with_project
+    roster.add(home, "old", str(proj), status="archived")
+    monkeypatch.chdir(home)
+    rc = cli.main(["menu", "--all", "--pick", "2", "--adapter", "tmux", "--dry-run"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "old" in out
+
+
+def test_cli_menu_all_archived_notes_when_no_active(tmp_control_home, monkeypatch, capsys):
+    roster.add(tmp_control_home, "old", "/p/old", status="archived")
+    monkeypatch.chdir(tmp_control_home)
+    rc = cli.main(["menu", "--pick", "1", "--dry-run"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "no active projects" in out
+
+
 def test_select_entries_resolves_picks():
     entries = [
         {"name": "a", "path": "/a"},

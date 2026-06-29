@@ -29,6 +29,10 @@ from typing import Optional
 TIDE_DIR = ".tide"
 ROSTER_FILE = "roster.md"
 
+# Env var pointing at the control-home, so `tide` resolves the roster from any
+# cwd (not only when run inside the control-home tree). See :func:`control_home`.
+TIDE_HOME_ENV = "TIDE_HOME"
+
 CANON_DIRNAME = "canon"          # new canonical spelling
 CANNON_DIRNAME = "cannon"        # legacy spelling — for back-compat detection only
 ARCS_DIRNAME = "arcs"
@@ -68,6 +72,32 @@ def require_tide_root(start: Optional[Path] = None) -> Path:
             "(run 'tide init' to unfold a control-home)".format(where)
         )
     return root
+
+
+def control_home(start: Optional[Path] = None) -> Path:
+    """Resolve the control-home, preferring ``$TIDE_HOME`` over the cwd climb.
+
+    This is the entry point for commands that operate on the **roster** (``tide
+    menu``, ``tide roster``): they must work from any directory, not only from
+    inside the control-home tree. Resolution order:
+
+    1. ``$TIDE_HOME`` — if set, it must point at an existing directory (the
+       control-home); a stale/missing path is a clear error, not a silent
+       fall-through to the cwd climb.
+    2. Otherwise climb from *start* for a ``.tide/`` ancestor
+       (:func:`require_tide_root`).
+    """
+    env = os.environ.get(TIDE_HOME_ENV)
+    if env and env.strip():
+        home = Path(env).expanduser()
+        if not home.is_dir():
+            raise FileNotFoundError(
+                "{0} points at {1}, which is not a directory".format(
+                    TIDE_HOME_ENV, home
+                )
+            )
+        return home.resolve()
+    return require_tide_root(start)
 
 
 def tide_dir(root: Path) -> Path:
