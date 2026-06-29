@@ -97,24 +97,26 @@ def test_fork_offer_names_all_three():
 
 # --- autospawn toggle ------------------------------------------------------
 
-def test_autospawn_default_on():
-    assert handoff.autospawn_enabled(None) is True
-    assert handoff.autospawn_enabled({}) is True
+def test_autospawn_default_off():
+    # Auto-opening terminals is OFF by default — only an explicit on enables.
+    assert handoff.autospawn_from_text(None) is False
+    assert handoff.autospawn_from_text("") is False
+    assert handoff.autospawn_from_text("off") is False
+    assert handoff.autospawn_from_text("on") is True
+    assert handoff.autospawn_from_text("true") is True
 
 
-def test_autospawn_explicit_false_disables():
-    assert handoff.autospawn_enabled({"handoff_autospawn": False}) is False
-    assert handoff.autospawn_enabled({"handoff_autospawn": True}) is True
+def test_read_autospawn_default_off_when_absent(tmp_project):
+    assert handoff.read_autospawn(tmp_project) is False  # no opt-in file → off
 
 
-def test_read_autospawn_reads_settings(tmp_project):
-    claude = tmp_project / ".claude"
-    claude.mkdir()
-    (claude / "settings.json").write_text(
-        json.dumps({"handoff_autospawn": False}), encoding="utf-8"
-    )
-    assert handoff.read_autospawn(tmp_project) is False
-    assert handoff.read_autospawn(tmp_project) is False
+def test_read_autospawn_opt_in_via_state_file(tmp_project):
+    from tide import paths
+
+    state = paths.state_dir(tmp_project)
+    state.mkdir(parents=True, exist_ok=True)
+    (state / handoff.AUTOSPAWN_FILE).write_text("on\n", encoding="utf-8")
+    assert handoff.read_autospawn(tmp_project) is True
 
 
 # --- run_handoff orchestration ---------------------------------------------
@@ -122,7 +124,7 @@ def test_read_autospawn_reads_settings(tmp_project):
 def test_run_handoff_continue_dry_run_writes_and_builds_spawn(tmp_project):
     stream.new_arc(tmp_project, "ship-it")
     res = handoff.run_handoff(
-        tmp_project, arc_ref="ship-it", mode="continue", dry_run=True
+        tmp_project, arc_ref="ship-it", mode="continue", dry_run=True, autospawn=True
     )
     assert res.summary_path.exists()
     assert res.summary_path.parent.name == handoff.WORKSPACE_DIRNAME
@@ -155,7 +157,7 @@ def test_run_handoff_toggle_off_skips_spawn(tmp_project):
 def test_run_handoff_new_mode_spawns_orchestrator(tmp_project):
     stream.new_arc(tmp_project, "ship-it")
     res = handoff.run_handoff(
-        tmp_project, arc_ref="ship-it", mode="new", dry_run=True
+        tmp_project, arc_ref="ship-it", mode="new", dry_run=True, autospawn=True
     )
     assert res.spawn is not None and res.spawn.ok
 
@@ -228,7 +230,7 @@ def test_run_handoff_continue_lands_in_arc_worktree_cwd(tmp_project):
     from tide import fields
     fields.set_field(worktree._passport(arc), WORKSPACE_FIELD, str(ws))
 
-    res = handoff.run_handoff(tmp_project, arc_ref="ship-it", mode="continue", dry_run=True)
+    res = handoff.run_handoff(tmp_project, arc_ref="ship-it", mode="continue", dry_run=True, autospawn=True)
     # the spawn cwd reflects the arc's orca workspace, not the bare project root
     assert str(ws) in _spawn_blob(res)
 
@@ -243,7 +245,7 @@ def test_run_handoff_new_mode_uses_root_cwd(tmp_project):
     ws.mkdir()
     fields.set_field(worktree._passport(arc), WORKSPACE_FIELD, str(ws))
 
-    res = handoff.run_handoff(tmp_project, arc_ref="ship-it", mode="new", dry_run=True)
+    res = handoff.run_handoff(tmp_project, arc_ref="ship-it", mode="new", dry_run=True, autospawn=True)
     blob = _spawn_blob(res)
     # new mode seeds a project-level orchestrator at the root — never the arc worktree
     assert str(ws) not in blob
@@ -270,7 +272,7 @@ def test_run_handoff_cross_project_writes_into_owning_project(tmp_control_home, 
 
     # Fired from the control-home; the distil must land in the OWNING project's arc.
     res = handoff.run_handoff(
-        tmp_control_home, arc_ref="remote-thread", mode="continue", dry_run=True
+        tmp_control_home, arc_ref="remote-thread", mode="continue", dry_run=True, autospawn=True
     )
     assert str(proj) in str(res.summary_path)
     assert res.summary_path.parent.name == handoff.WORKSPACE_DIRNAME

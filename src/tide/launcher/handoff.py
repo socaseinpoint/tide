@@ -13,9 +13,11 @@ arc. Per design §12 it does four things, in order:
 3. **offer a fork** — ``continue`` (resume THIS arc in a fresh session) ·
    ``new`` (a fresh orchestrator session to pick a candidate) · ``close`` (just
    distil, no spawn).
-4. **auto-spawn (toggle, default ON)** — for ``continue``/``new`` build the seed
-   (:mod:`tide.launcher.seed`) and hand it to the configured terminal adapter
-   (:mod:`tide.adapters`, Orca default). ``close`` never spawns.
+4. **auto-spawn (toggle, default OFF)** — for ``continue``/``new`` build the seed
+   (:mod:`tide.launcher.seed`) and, ONLY when a project opts in via
+   ``.tide/state/autospawn``, hand it to the configured terminal adapter
+   (:mod:`tide.adapters`, Orca default). Off by default: the spawn is fragile, so
+   the pull model (offer + ``tide handoffs``) is the default; ``close`` never spawns.
 
 Two layers as everywhere else: pure functions (``build_summary``, ``fork_offer``,
 ``autospawn_enabled`` …) are argparse- and disk-free and snapshot-testable;
@@ -25,7 +27,6 @@ thin CLI handler wired by ``cli.py``.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from datetime import date as _date
 from pathlib import Path
@@ -40,9 +41,6 @@ from . import context, seed
 
 WORKSPACE_DIRNAME = "workspace"
 SUMMARY_PREFIX = "handoff-"
-
-# settings.json toggle — the auto-spawn default is ON; only an explicit false off.
-SETTINGS_AUTOSPAWN_KEY = "handoff_autospawn"
 
 FORK_CONTINUE = "continue"
 FORK_NEW = "new"
@@ -181,30 +179,30 @@ def fork_offer(arc_ref: str) -> str:
 
 # --- auto-spawn toggle ------------------------------------------------------
 
-def autospawn_enabled(settings: Optional[dict]) -> bool:
-    """Resolve the auto-spawn toggle (default ON; only an explicit false disables)."""
-    if isinstance(settings, dict):
-        value = settings.get(SETTINGS_AUTOSPAWN_KEY)
-        if isinstance(value, bool):
-            return value
-    return True
+# Per-project opt-in file: .tide/state/autospawn. Auto-opening a new Orca terminal
+# on handoff is OFF by default (the spawn is fragile; the pull model — offer +
+# `tide handoffs` — is the default). Opt a project IN with `on` in this file.
+AUTOSPAWN_FILE = "autospawn"
+_AUTOSPAWN_ON = {"on", "true", "1", "yes"}
 
 
-def _read_settings(root: Path) -> Optional[dict]:
-    """Best-effort read of the project ``.claude/settings.json`` (None on any issue)."""
-    path = Path(root) / ".claude" / "settings.json"
-    if not path.is_file():
-        return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8") or "{}")
-    except (json.JSONDecodeError, ValueError, OSError):
-        return None
-    return data if isinstance(data, dict) else None
+def autospawn_from_text(text: Optional[str]) -> bool:
+    """Parse an autospawn toggle value (default OFF; only an explicit on enables)."""
+    if not text:
+        return False
+    return text.strip().lower() in _AUTOSPAWN_ON
 
 
 def read_autospawn(root: Path) -> bool:
-    """The effective auto-spawn toggle for project *root* (settings, default ON)."""
-    return autospawn_enabled(_read_settings(root))
+    """The effective auto-spawn toggle for *root* — OFF unless ``.tide/state/autospawn``
+    opts in (``on``/``true``/``1``). Auto-opening terminals is opt-in per project."""
+    from .. import paths  # lazy: keep module import-light
+
+    f = paths.state_dir(Path(root)) / AUTOSPAWN_FILE
+    try:
+        return autospawn_from_text(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
 
 
 # --- orca workspace focus (best-effort) -------------------------------------
@@ -294,9 +292,8 @@ def run_handoff(
         return result
     if not effective_spawn:
         result.notes.append(
-            "auto-spawn off ({0}=false) — run 'tide {1}' by hand to resume".format(
-                SETTINGS_AUTOSPAWN_KEY, root.resolve().name
-            )
+            "auto-spawn off (default) — offer hung; pick it up via 'tide handoffs' "
+            "or opt a project in with `on` in .tide/state/{0}".format(AUTOSPAWN_FILE)
         )
         return result
 
