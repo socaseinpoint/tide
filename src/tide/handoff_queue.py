@@ -86,6 +86,7 @@ def _record_md(name: str, *, mode: str, arc: str, project: str, seed: str,
         "seed: {seed}\n"
         "from-session: {frm}\n"
         "created: {created}\n"
+        "pickup-session: -\n"
         "taken-by: -\n"
         "taken-at: -\n\n"
         "## note\n{note}\n"
@@ -114,6 +115,7 @@ def _parse(path: Path) -> Optional[Dict[str, object]]:
         "seed": _get(text, "seed"),
         "from_session": _get(text, "from-session"),
         "created": _get(text, "created"),
+        "pickup_session": _get(text, "pickup-session"),
         "taken_by": _get(text, "taken-by"),
         "taken_at": _get(text, "taken-at"),
     }
@@ -177,18 +179,34 @@ def take(home: Path, key: str, *, session: Optional[str] = None) -> Dict[str, ob
     return _mark_taken(_resolve(home, key), session=session)
 
 
-def confirm_for_project(home: Path, project: str, *, session: Optional[str] = None
-                        ) -> Optional[Dict[str, object]]:
-    """Claim the NEWEST still-offered handoff for *project* (the confirm hook's core).
+def reserve(home: Path, key: str, *, session: str) -> Dict[str, object]:
+    """Reserve an OFFERED handoff for a specific *session* (set ``pickup-session``).
 
-    Returns the claimed record, or None when nothing is hanging for this project —
-    so the hook is a silent no-op in any ordinary session.
+    Called at menu-pickup launch with the pinned ``--session-id``. Status STAYS
+    offered — the reservation just records WHICH session is allowed to confirm it,
+    so a confirm hook in any OTHER session of the same project won't vacuum it. The
+    real flip to ``taken`` happens on that session's first message
+    (:func:`confirm_for_session`).
     """
-    pending = [r for r in list_offers(home, status=STATUS_OFFERED) if r["project"] == project]
-    if not pending:
+    rec = _resolve(home, key)
+    _set_field(rec["path"], "pickup-session", session)
+    return _parse(rec["path"])
+
+
+def confirm_for_session(home: Path, session: str) -> Optional[Dict[str, object]]:
+    """Claim the offered handoff RESERVED for *session* (the confirm hook's core).
+
+    Matches strictly on ``pickup-session`` — only the session that was actually
+    launched from the offer confirms it. Returns the claimed record, or None when
+    nothing is reserved for this session (so the hook is a silent no-op in any
+    ordinary session — no more project-wide vacuuming).
+    """
+    if not session:
         return None
-    newest = pending[-1]  # filename NN order → last is most recent
-    return _mark_taken(newest, session=session)
+    for r in list_offers(home, status=STATUS_OFFERED):
+        if r["pickup_session"] == session:
+            return _mark_taken(r, session=session)
+    return None
 
 
 # --- render ----------------------------------------------------------------
@@ -239,27 +257,27 @@ def _cmd_take(args) -> int:
 
 
 def cmd_handoff_confirm(args) -> int:
-    """``tide hook handoff-confirm`` — UserPromptSubmit: claim a pending handoff.
+    """``tide hook handoff-confirm`` — UserPromptSubmit: confirm THIS session's handoff.
 
-    Fired on every user message; the FIRST one in a freshly-picked-up session is
-    what confirms the handoff. Resolves the cwd project + control-home, claims the
-    newest offer for that project, and stamps the session id (read from the hook's
-    stdin JSON when present). Fully defensive: outside a tide project, with nothing
-    pending, or on any error it prints nothing and exits 0 — a hook must never break
-    a session, and re-firing on later messages is a harmless no-op (already taken).
+    Fired on every user message; the FIRST one in a picked-up session is what
+    confirms. Claims STRICTLY the offer reserved for this session's id (read from the
+    hook's stdin JSON — the menu pickup pinned that id via ``--session-id`` and
+    reserved the offer with it). A session that wasn't launched from a handoff (no
+    matching reservation) is a silent no-op — so ordinary sessions never vacuum
+    pending offers. Fully defensive: any error prints nothing and exits 0 (a hook
+    must never break a session); re-firing on later messages is a harmless no-op.
     """
     try:
-        root = paths.find_tide_root()
-        if root is None:
+        if paths.find_tide_root() is None:
             return 0
-        home = paths.control_home()
-        session = None
         try:
             payload = json.loads(sys.stdin.read() or "{}")
             session = payload.get("session_id") or payload.get("session")
         except (ValueError, OSError):
             session = None
-        claimed = confirm_for_project(home, root.resolve().name, session=session)
+        if not session:
+            return 0
+        claimed = confirm_for_session(paths.control_home(), session)
         if claimed:
             print("tide: handoff {0} confirmed — picked up here".format(claimed["name"]))
     except Exception as exc:  # noqa: BLE001  a hook must never raise

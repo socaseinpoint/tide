@@ -659,6 +659,17 @@ def launch_handoff(
     # lives at <session>/input/<seed>, so the passport is <session>/arc.md. After the
     # first turn persists the conversation, `tide menu → … → that session` resumes it.
     if not dry_run:
+        # Reserve the offer for THIS session id so only it can confirm (the confirm
+        # hook matches pickup-session) — no other project session vacuums it. Status
+        # stays offered until that session's first message flips it to taken.
+        from .. import handoff_queue  # lazy: avoid import cycle
+        try:
+            handoff_queue.reserve(control_home, record["name"], session=session_id)
+        except Exception:  # noqa: BLE001  best-effort, never fatal
+            pass
+        # Register the picked-up session as RESUMABLE from the menu: pin the new
+        # claude session id onto the handoff's target session passport. The seed
+        # lives at <session>/input/<seed>, so the passport is <session>/arc.md.
         try:
             from .. import fields
             passport = Path(seed_path).parent.parent / "arc.md"

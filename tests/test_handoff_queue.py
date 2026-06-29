@@ -23,22 +23,24 @@ def test_offer_writes_an_offered_record(tmp_control_home):
     assert r["seed"] == "/s/seed.md"
 
 
-def test_confirm_for_project_claims_newest_and_stamps(tmp_control_home):
-    hq.offer(tmp_control_home, "old", arc="-", project="tide", seed="/s/a.md")
-    hq.offer(tmp_control_home, "new", arc="-", project="tide", seed="/s/b.md")
-    claimed = hq.confirm_for_project(tmp_control_home, "tide", session="sess-123")
+def test_reserve_then_confirm_for_session(tmp_control_home):
+    hq.offer(tmp_control_home, "a", arc="-", project="tide", seed="/s/a.md")
+    hq.offer(tmp_control_home, "b", arc="-", project="tide", seed="/s/b.md")
+    hq.reserve(tmp_control_home, "b", session="sess-123")  # reserve B for this session
+    claimed = hq.confirm_for_session(tmp_control_home, "sess-123")
     assert claimed is not None
-    assert claimed["slug"] == "new"           # newest offered claimed
+    assert claimed["slug"] == "b"                 # only the RESERVED one is claimed
     assert claimed["status"] == hq.STATUS_TAKEN
     assert claimed["taken_by"] == "sess-123"
-    # the older one is still offered
-    offered = hq.list_offers(tmp_control_home, status=hq.STATUS_OFFERED)
-    assert [r["slug"] for r in offered] == ["old"]
+    # A is untouched (not reserved for this session) — no project-wide vacuuming.
+    assert [r["slug"] for r in hq.list_offers(tmp_control_home, status=hq.STATUS_OFFERED)] == ["a"]
 
 
-def test_confirm_for_project_noop_when_nothing_pending(tmp_control_home):
-    hq.offer(tmp_control_home, "x", arc="-", project="other", seed="-")
-    assert hq.confirm_for_project(tmp_control_home, "tide") is None  # different project
+def test_confirm_for_session_noop_without_reservation(tmp_control_home):
+    # An ordinary session (not launched from a handoff) must NOT claim anything.
+    hq.offer(tmp_control_home, "x", arc="-", project="tide", seed="-")
+    assert hq.confirm_for_session(tmp_control_home, "random-session") is None
+    assert hq.list_offers(tmp_control_home, status=hq.STATUS_OFFERED)  # still offered
 
 
 def test_take_by_key_marks_taken(tmp_control_home):
@@ -62,13 +64,13 @@ def test_cli_offer_then_confirm_hook_flips_status(tmp_control_home, tmp_path, mo
     scaffold_project(proj, name="tide")
     monkeypatch.setenv("TIDE_HOME", str(tmp_control_home))
 
-    # stage 1: offer (from anywhere — resolves the control-home via TIDE_HOME)
+    # stage 1: offer + reserve it for the picking-up session id (menu pickup does this)
     assert cli.main(["handoffs", "offer", "cont", "--project", "tide", "--seed", "/s.md"]) == 0
+    hq.reserve(tmp_control_home, "cont", session="new-sess")
     assert hq.list_offers(tmp_control_home, status=hq.STATUS_OFFERED)
 
-    # stage 2: the UserPromptSubmit hook fires in the picked-up session (cwd = project).
-    # The first message confirms — claim is by cwd-project match (stdin session id is a
-    # best-effort audit field; the pure-function test above covers its stamping).
+    # stage 2: the UserPromptSubmit hook fires in that session — its id (from stdin)
+    # matches the reservation, so the offer flips to taken.
     monkeypatch.chdir(proj)
     monkeypatch.setattr("sys.stdin", io.StringIO('{"session_id": "new-sess"}'))
     assert cli.main(["hook", "handoff-confirm"]) == 0
