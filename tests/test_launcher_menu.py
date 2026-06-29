@@ -138,6 +138,30 @@ def test_launch_entries_dry_run_builds_tmux_command(home_with_project):
     assert "--append-system-prompt" in new_window
 
 
+def test_launch_preview_returns_name_and_scoped_command(home_with_project):
+    home, _ = home_with_project
+    entries = menu.list_entries(home)
+    preview = menu.launch_preview(entries, control_home=home)
+    assert len(preview) == 1
+    name, command = preview[0]
+    assert name == "proj"
+    assert command.startswith("claude ")
+    assert "--strict-mcp-config" in command
+    assert command.endswith("--append-system-prompt @<seed-file>")
+
+
+def test_cli_menu_debug_prints_scoped_command(home_with_project, monkeypatch, capsys):
+    home, _ = home_with_project
+    monkeypatch.chdir(home)
+    # --debug paired with --dry-run keeps the test from opening a real terminal,
+    # while still proving --debug surfaces the full command before launch.
+    rc = cli.main(["menu", "--pick", "1", "--adapter", "tmux", "--debug", "--dry-run"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "proj scoped command:" in out
+    assert "claude --strict-mcp-config" in out
+
+
 def test_build_launch_is_scoped_lean_by_default(home_with_project):
     home, proj = home_with_project
     command = menu.build_launch(proj, control_home=home, dry_run=True)

@@ -203,6 +203,29 @@ def resolve_adapter_name(root: Path, override: Optional[str]) -> Optional[str]:
     return None
 
 
+# --- launch preview (pure) -------------------------------------------------
+
+def launch_preview(
+    chosen: List[Dict[str, str]],
+    *,
+    control_home: Path,
+    role: str = DEFAULT_ROLE,
+) -> List[tuple]:
+    """The scoped command(s) the human would enter with — for ``--dry-run`` /
+    ``--debug`` display.
+
+    Pure: builds each project's resolved ``claude …`` argv WITHOUT spawning (and
+    without persisting a seed — the placeholder ``@<seed-file>`` token stands in
+    for the temp path). Returns ``[(name, command_string), …]`` in pick order.
+    """
+    out = []
+    for entry in chosen:
+        project = Path(entry["path"]).expanduser()
+        command = build_launch(project, control_home=control_home, role=role, dry_run=True)
+        out.append((entry["name"], " ".join(command)))
+    return out
+
+
 # --- CLI handler -----------------------------------------------------------
 
 def cmd_menu(args) -> int:
@@ -229,7 +252,16 @@ def cmd_menu(args) -> int:
     chosen = select_entries(entries, raw)
     adapter_name = resolve_adapter_name(root, getattr(args, "adapter", None))
     dry_run = bool(getattr(args, "dry_run", False))
+    debug = bool(getattr(args, "debug", False))
     role = getattr(args, "role", None) or DEFAULT_ROLE
+
+    # --debug (real launch) and --dry-run (no launch) both show the human EXACTLY
+    # what scoped session will run — the resolved claude argv (strict MCP scoping
+    # visible, no global MCP loaded) — BEFORE the terminal opens.
+    if dry_run or debug:
+        for name, command in launch_preview(chosen, control_home=root, role=role):
+            print("tide: {0} scoped command:".format(name))
+            print("  {0}".format(command))
 
     results = launch_entries(
         chosen,
@@ -241,14 +273,6 @@ def cmd_menu(args) -> int:
     for entry, res in zip(chosen, results):
         flag = "ok" if res.ok else "FAILED"
         print("tide: {0} [{1}] {2}".format(entry["name"], flag, res.detail))
-        if dry_run:
-            # Show the human EXACTLY what scoped session would launch — the resolved
-            # claude argv (strict MCP scoping visible, no global MCP loaded).
-            project = Path(entry["path"]).expanduser()
-            command = build_launch(
-                project, control_home=root, role=role, dry_run=True
-            )
-            print("  scoped command: {0}".format(" ".join(command)))
     return 0 if all(r.ok for r in results) else 1
 
 
@@ -270,5 +294,10 @@ def register(subparsers) -> None:
         action="store_true",
         dest="dry_run",
         help="build seeds + adapter commands without opening a terminal",
+    )
+    p.add_argument(
+        "--debug",
+        action="store_true",
+        help="print the full scoped launch command before opening the terminal",
     )
     p.set_defaults(func=cmd_menu, _cmd="menu")
