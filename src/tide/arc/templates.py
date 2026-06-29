@@ -37,30 +37,50 @@ def arc_md(name: str) -> str:
     ).format(name=name)
 
 
-def thread_md(name: str) -> str:
-    """Seed text for a thread's ``arc.md`` passport (a session-bound arc).
+def prism_goal_md(slug: str) -> str:
+    """Seed text for a prism's goal doc — a ``kind: prism`` container of sessions.
 
-    A *thread* (нить) is a third arc kind: the persistent memory home of ONE
-    orchestrator session. It is a normal arc on disk (``NN-<slug>/`` + ``arc.md``)
-    marked with ``kind: thread`` — so the picker can offer threads only, while
-    ``open``/``close``/``passport``/seed reuse the arc machinery unchanged.
-    Handoffs and context offloads land in ``## context`` over the thread's life.
+    A *prism* (призма) is a durable work-line. Like a goal it holds its items —
+    here **sessions** — as sub-arcs in the nested ``arcs/``; ``kind: prism`` marks
+    it so the picker offers prisms (not work-goals). ``## where we are`` is the
+    only mutable narrative; the live resume point lives on each session's cursor.
+    """
+    return (
+        "# {slug}-prism — <призма: the work-line this prism carries>\n"
+        "\n"
+        "goal: <one line — what this prism is about; ≤12 words>\n"
+        "status: active\n"
+        "kind: prism\n"
+        "\n"
+        "# The prism's items = its sessions (NN-slug in arcs/), chained by from:.\n"
+        "\n"
+        "## where we are\n"
+        "<the live state of this prism across its sessions>\n"
+    ).format(slug=slug)
+
+
+def session_md(name: str) -> str:
+    """Seed text for a session's ``arc.md`` passport (one run inside a prism).
+
+    A *session* is one orchestrator entry within a prism. Its ``## cursor`` is the
+    resume slot — re-entering the session drops you back here. ``from:`` chains it
+    to the prior session so the lineage is visible. Context offloads / handoff
+    distillations accrue in ``## context`` over the session's life.
 
     *name* is the entry dir name (``NN-<slug>``) used as the H1 heading.
     """
     return (
         "# {name}\n"
         "\n"
-        "goal: <one line — what this session-thread is about>\n"
+        "goal: <one line — what this session is for>\n"
         "status: active\n"
-        "kind: thread\n"
-        "# from: <slug of the thread this one branched / handed off from — optional>\n"
+        "# from: <prior session slug — set automatically when the prism has one>\n"
+        "\n"
+        "## cursor — resume here\n"
+        "<where this session left off; the next concrete step to pick up>\n"
         "\n"
         "## context\n"
         "<session memory — handoff distillations and context offloads land here>\n"
-        "\n"
-        "## where we are\n"
-        "<the live state of this thread>\n"
     ).format(name=name)
 
 

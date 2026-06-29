@@ -164,71 +164,87 @@ def test_cli_menu_debug_prints_scoped_command(home_with_project, monkeypatch, ca
     assert "claude --dangerously-skip-permissions --strict-mcp-config" in out
 
 
-# --- thread (нить) selection -----------------------------------------------
+# --- prism (призма) + session selection ------------------------------------
 
-def test_parse_thread_choice_new_on_empty_or_keyword():
-    assert menu.parse_thread_choice("", 2) == menu.THREAD_NEW
-    assert menu.parse_thread_choice("new", 2) == menu.THREAD_NEW
-    assert menu.parse_thread_choice("3", 2) == menu.THREAD_NEW  # the count+1 row
+def test_parse_pick_zero_and_keywords_are_new():
+    assert menu.parse_pick("0", 2) == menu.PICK_NEW
+    assert menu.parse_pick("", 2) == menu.PICK_NEW
+    assert menu.parse_pick("new", 2) == menu.PICK_NEW
 
 
-def test_parse_thread_choice_index_and_bad():
-    assert menu.parse_thread_choice("2", 3) == 2
+def test_parse_pick_index_and_bad():
+    assert menu.parse_pick("2", 3) == 2
     with pytest.raises(menu.MenuError):
-        menu.parse_thread_choice("9", 3)
+        menu.parse_pick("9", 3)
     with pytest.raises(menu.MenuError):
-        menu.parse_thread_choice("x", 3)
+        menu.parse_pick("x", 3)
 
 
-def test_list_threads_only_threads(home_with_project):
+def test_list_prisms_only_prisms(home_with_project):
     _, proj = home_with_project
     from tide.arc import stream
     stream.new_arc(proj, "just-work")
-    stream.new_thread(proj, "morning")
-    threads = menu.list_threads(proj)
-    assert [t["slug"] for t in threads] == ["morning"]
+    stream.new_prism(proj, "morning")
+    prisms = menu.list_prisms(proj)
+    assert [p["slug"] for p in prisms] == ["morning"]
 
 
-def test_render_thread_menu_has_new_row(home_with_project):
+def test_render_prism_menu_zero_is_new(home_with_project):
     _, proj = home_with_project
     from tide.arc import stream
-    stream.new_thread(proj, "morning")
-    out = menu.render_thread_menu("proj", menu.list_threads(proj))
+    stream.new_prism(proj, "morning")
+    out = menu.render_prism_menu("proj", menu.list_prisms(proj))
+    assert "0) + new prism" in out
     assert "1) morning" in out
-    assert "+ new thread" in out
 
 
-def test_create_thread_returns_slug_and_persists(home_with_project):
+def test_render_session_menu_shows_lineage(home_with_project):
     _, proj = home_with_project
     from tide.arc import stream
-    ref = menu.create_thread(proj, "deep work")
-    assert ref == "deep-work"
-    assert [t["slug"] for t in menu.list_threads(proj)] == ["deep-work"]
-    assert menu.create_thread(proj, "  ") is None  # blank → skip
+    stream.new_prism(proj, "prz")
+    stream.new_session(proj, "prz", "first")
+    stream.new_session(proj, "prz", "second")
+    out = menu.render_session_menu("prz", menu.list_sessions(proj, "prz"))
+    assert "0) + new session" in out
+    assert "1) first" in out
+    assert "(from first)" in out  # session 2 lineage
 
 
-def test_build_launch_binds_thread_into_seed(home_with_project):
+def test_resolve_session_new_prism_and_session(home_with_project):
+    _, proj = home_with_project
+    bound = menu.resolve_session(
+        proj, "proj", new_prism="deep work", new_session="kickoff"
+    )
+    assert bound["prism"] == "deep-work"
+    assert bound["arc_ref"] == "kickoff"
+    assert "## cursor" in (bound["arc_text"] or "")
+
+
+def test_build_launch_binds_session_into_seed(home_with_project):
     home, proj = home_with_project
     from tide.arc import stream
-    stream.new_thread(proj, "my session")
-    # a real (non-dry) build persists a seed carrying the bound thread passport
-    command = menu.build_launch(proj, control_home=home, arc_ref="my-session")
+    stream.new_prism(proj, "prz")
+    sess = stream.new_session(proj, "prz", "work one")
+    arc_text = (sess / "arc.md").read_text(encoding="utf-8")
+    command = menu.build_launch(
+        proj, control_home=home, arc_ref="work-one", arc_text=arc_text, prism_name="prz"
+    )
     seed_arg = command[-1]
     assert seed_arg.startswith("@")
     seed_text = Path(seed_arg[1:]).read_text(encoding="utf-8")
-    assert "Active arc" in seed_text and "my-session" in seed_text
+    assert "Active session" in seed_text and "prism: prz" in seed_text and "cursor" in seed_text
 
 
-def test_cli_menu_new_thread_creates_and_binds(home_with_project, monkeypatch, capsys):
+def test_cli_menu_new_prism_session_creates_and_binds(home_with_project, monkeypatch, capsys):
     home, proj = home_with_project
     monkeypatch.chdir(home)
     rc = cli.main(
-        ["menu", "--pick", "1", "--new-thread", "kickoff",
+        ["menu", "--pick", "1", "--new-prism", "kickoff", "--new-session", "start",
          "--adapter", "tmux", "--debug", "--dry-run"]
     )
     assert rc == 0
-    # the thread now exists in the project, created by the picker
-    assert [t["slug"] for t in menu.list_threads(proj)] == ["kickoff"]
+    assert [p["slug"] for p in menu.list_prisms(proj)] == ["kickoff"]
+    assert [s["slug"] for s in menu.list_sessions(proj, "kickoff")] == ["start"]
 
 
 def test_build_launch_skips_permissions_by_default(home_with_project):

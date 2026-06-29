@@ -118,16 +118,19 @@ def build_seed(
     roster_text: Optional[str] = None,
     arc_ref: Optional[str] = None,
     arc_text: Optional[str] = None,
+    prism_name: Optional[str] = None,
     prompt_text: Optional[str] = None,
     launch_cmd: Optional[str] = None,
 ) -> str:
     """Assemble the seed string from already-resolved pieces (pure, no I/O).
 
     Sections, in order: a header naming the project + role, the role block (shipped
-    prompt or the fallback reminder), the project ``CANON.md``, the active-arc
+    prompt or the fallback reminder), the project ``CANON.md``, the active entry
     passport (only when *arc_ref* is given), the control-home roster (only when
-    *roster_text* is given), and a closing launch hint. Empty pieces are rendered
-    as an explicit ``(…)`` note so the shape is stable for snapshot tests.
+    *roster_text* is given), and a closing launch hint. When *prism_name* is given
+    the active entry is framed as a **session inside a prism (призма)** — the
+    session's ``## cursor`` is the resume point. Empty pieces render as an explicit
+    ``(…)`` note so the shape is stable for snapshot tests.
     """
     lines: List[str] = [
         SEED_TITLE,
@@ -144,11 +147,23 @@ def build_seed(
     ]
 
     if arc_ref:
-        lines += [
-            "",
-            "## Active arc — {0}".format(arc_ref),
-            arc_text.strip() if (arc_text and arc_text.strip()) else "(no open arc passport found)",
-        ]
+        if prism_name:
+            lines += [
+                "",
+                "## Active session — {0}  (prism: {1})".format(arc_ref, prism_name),
+                "You are continuing a **session** inside the prism (призма) **{0}** — "
+                "the arc through which this work-line is managed. Resume from the "
+                "session's `## cursor`; keep the cursor + `## context` updated as you "
+                "work so the next session can pick up.".format(prism_name),
+                "",
+                arc_text.strip() if (arc_text and arc_text.strip()) else "(no session passport found)",
+            ]
+        else:
+            lines += [
+                "",
+                "## Active arc — {0}".format(arc_ref),
+                arc_text.strip() if (arc_text and arc_text.strip()) else "(no open arc passport found)",
+            ]
 
     if roster_text is not None:
         lines += [
@@ -173,15 +188,21 @@ def seed_for_project(
     root: Path,
     *,
     arc_ref: Optional[str] = None,
+    arc_text: Optional[str] = None,
+    prism_name: Optional[str] = None,
     role: str = ROLE_ORCHESTRATOR,
     control_home: Optional[Path] = None,
 ) -> str:
     """Build the seed for project *root*, reading canon / arc / prompt / roster.
 
     *control_home* (when given and a real control-home) supplies the roster block
-    so a cross-project orchestrator session sees the whole portfolio. A missing
-    CANON.md, an unshipped prompt, or an absent arc all degrade to explicit notes
-    rather than raising — a seed is always producible.
+    so a cross-project orchestrator session sees the whole portfolio. *arc_text*,
+    when given, is used verbatim as the active entry's passport (the picker passes
+    a session's passport directly, since sessions live in a prism substream that
+    the top-stream ``read_arc_passport`` would not find); otherwise the passport is
+    read by *arc_ref*. *prism_name* frames the entry as a session inside that
+    prism. A missing CANON.md / prompt / arc all degrade to explicit notes — a
+    seed is always producible.
     """
     root = Path(root)
     project_name = root.resolve().name
@@ -189,7 +210,8 @@ def seed_for_project(
     canon = paths.canon_file(root)
     canon_text_str = canon.read_text(encoding="utf-8") if canon.is_file() else ""
 
-    arc_text = read_arc_passport(root, arc_ref) if arc_ref else None
+    if arc_text is None and arc_ref:
+        arc_text = read_arc_passport(root, arc_ref)
     prompt_text = read_role_prompt(role)
 
     roster_text: Optional[str] = None
@@ -207,6 +229,7 @@ def seed_for_project(
         roster_text=roster_text,
         arc_ref=arc_ref,
         arc_text=arc_text,
+        prism_name=prism_name,
         prompt_text=prompt_text,
         launch_cmd=launch_command(project_name, arc_ref),
     )
