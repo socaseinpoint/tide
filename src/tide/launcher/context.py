@@ -65,6 +65,36 @@ DEFAULT_READ_FIRST = ("CLAUDE.md",)  # canon/CANON.md is appended via paths.cano
 
 # --- pure command builder --------------------------------------------------
 
+def scoped_flags(profile: Dict[str, object]) -> List[str]:
+    """The scoped MCP/tool flags from *profile* — strict + mcp_config + allowed + extra.
+
+    Pure, seed-less: everything between the program name and the seed reference. The
+    default lean profile yields ``["--strict-mcp-config"]`` (zero global MCP); a
+    profile may add a scoped ``--mcp-config``, an ``--allowedTools`` allow-list, and
+    verbatim ``extra_args``. Shared by :func:`build_launch_command` (fresh launch)
+    AND the resume path so a resumed session re-applies the SAME scoping a fresh one
+    gets — otherwise a bare ``--strict-mcp-config`` on resume silently drops the
+    project's scoped servers (e.g. a per-project ``--mcp-config``).
+    """
+    flags: List[str] = []
+
+    if profile.get("strict_mcp", True):
+        flags.append("--strict-mcp-config")
+
+    mcp_config = profile.get("mcp_config")
+    if mcp_config:
+        flags += ["--mcp-config", str(mcp_config)]
+
+    allowed = profile.get("allowed_tools")
+    if allowed:
+        flags += ["--allowedTools", ",".join(str(t) for t in allowed)]
+
+    for arg in profile.get("extra_args") or []:
+        flags.append(str(arg))
+
+    return flags
+
+
 def build_launch_command(seed_file: str, profile: Dict[str, object]) -> List[str]:
     """Build the scoped ``claude`` argv from *profile* + the persisted *seed_file*.
 
@@ -72,27 +102,12 @@ def build_launch_command(seed_file: str, profile: Dict[str, object]) -> List[str
 
         claude --strict-mcp-config --append-system-prompt @<seed_file>
 
-    which loads NO global MCP servers. A profile may add a scoped ``--mcp-config``,
-    an ``--allowedTools`` allow-list, and verbatim ``extra_args``. The seed is
-    delivered by reference (``@<seed_file>``) so a multi-KB payload never has to be
-    keystroked into the new terminal.
+    which loads NO global MCP servers. The scoped MCP/tool flags come from
+    :func:`scoped_flags`; the seed is delivered by reference (``@<seed_file>``) so a
+    multi-KB payload never has to be keystroked into the new terminal.
     """
     cmd: List[str] = [SESSION_PROGRAM]
-
-    if profile.get("strict_mcp", True):
-        cmd.append("--strict-mcp-config")
-
-    mcp_config = profile.get("mcp_config")
-    if mcp_config:
-        cmd += ["--mcp-config", str(mcp_config)]
-
-    allowed = profile.get("allowed_tools")
-    if allowed:
-        cmd += ["--allowedTools", ",".join(str(t) for t in allowed)]
-
-    for arg in profile.get("extra_args") or []:
-        cmd.append(str(arg))
-
+    cmd += scoped_flags(profile)
     cmd += ["--append-system-prompt", "@{0}".format(seed_file)]
     return cmd
 

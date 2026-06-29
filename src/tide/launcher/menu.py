@@ -614,7 +614,11 @@ def build_launch(
         resume_cmd = [context.SESSION_PROGRAM]
         if skip_permissions:
             resume_cmd.append(SKIP_PERMISSIONS)
-        resume_cmd += ["--resume", session_id, "--strict-mcp-config"]
+        resume_cmd += ["--resume", session_id]
+        # Re-apply the project's scoped MCP profile on resume too — the same flags a
+        # fresh launch gets. A bare --strict-mcp-config here would drop the project's
+        # --mcp-config (e.g. mitehq's linear-mite), so resumed sessions lost MCP.
+        resume_cmd += context.scoped_flags(context.load_profile(project))
         shell = "{0} || {1}".format(shlex.join(resume_cmd), shlex.join(fresh))
         return ["sh", "-c", shell]
     return fresh

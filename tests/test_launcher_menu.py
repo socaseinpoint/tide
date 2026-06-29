@@ -251,6 +251,25 @@ def test_continue_session_with_id_resumes_same_conversation(home_with_project):
     assert "--session-id abc-123" in shell  # the fallback re-pins the same id
 
 
+def test_resume_reapplies_scoped_mcp_config(home_with_project):
+    # Regression: a project with a scoped --mcp-config (e.g. mitehq's linear-mite)
+    # must keep that MCP on RESUME, not just on a fresh launch. A bare
+    # --strict-mcp-config on resume used to silently drop the scoped servers.
+    from tide import mcp
+
+    home, proj = home_with_project
+    mcp.add_server(proj, "linear-mite", "https://mcp.linear.app/mcp", http=True)
+    cmd = menu.build_launch(
+        proj, control_home=home, dry_run=True, session_id="abc-123", resume=True
+    )
+    shell = cmd[2]
+    resume_part = shell.split(" || ", 1)[0]  # the `claude --resume …` half
+    assert "--resume abc-123" in resume_part
+    assert "--strict-mcp-config" in resume_part
+    assert "--mcp-config" in resume_part  # the scoped server survives resume
+    assert "mcp.json" in resume_part
+
+
 def test_navigate_back_from_prism_returns_to_type(home_with_project, monkeypatch):
     home, proj = home_with_project
     from tide.arc import stream
