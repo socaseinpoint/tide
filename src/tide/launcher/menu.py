@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import uuid
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -365,30 +366,64 @@ def build_launch(
 
     Two shapes, both scoped + (by default) ``--dangerously-skip-permissions``:
 
-    * **resume** (``resume`` + *session_id*): ``claude --resume <id>`` — return to
-      the SAME conversation. No seed (the conversation already holds its context).
+    * **resume** (``resume`` + *session_id*): ``claude --resume <id> || <fresh>`` —
+      return to the SAME conversation; but claude only persists a session after a
+      first turn, so a pinned-but-never-used id has no conversation and ``--resume``
+      errors. The ``|| <fresh>`` fallback then launches a fresh seeded session under
+      the same id, so re-entry is always forgiving (returned as ``sh -c``).
     * **fresh** (otherwise): a seeded launch (*arc_ref*/*arc_text* carry the bound
-      session's passport, *prism_name* frames it). When *session_id* is given it is
+      session's passport, *prism_name* frames it). *session_id*, when given, is
       pinned via ``--session-id`` so a later entry can ``--resume`` this exact
       conversation. On dry-run a placeholder seed-file token is used.
     """
+    fresh = _fresh_command(
+        project,
+        control_home=control_home,
+        role=role,
+        arc_ref=arc_ref,
+        arc_text=arc_text,
+        prism_name=prism_name,
+        session_id=session_id,
+        skip_permissions=skip_permissions,
+        dry_run=dry_run,
+    )
     if resume and session_id:
-        command = [context.SESSION_PROGRAM, "--resume", session_id, "--strict-mcp-config"]
-    else:
-        s = seed.seed_for_project(
-            project,
-            role=role,
-            control_home=control_home,
-            arc_ref=arc_ref,
-            arc_text=arc_text,
-            prism_name=prism_name,
-        )
-        title = "tide-{0}".format(project.name)
-        seed_file = DRY_RUN_SEED_FILE if dry_run else str(persist_seed(s, title))
-        profile = context.load_profile(project)
-        command = context.build_launch_command(seed_file, profile)
-        if session_id:
-            command[1:1] = ["--session-id", session_id]  # pin for a future --resume
+        resume_cmd = [context.SESSION_PROGRAM]
+        if skip_permissions:
+            resume_cmd.append(SKIP_PERMISSIONS)
+        resume_cmd += ["--resume", session_id, "--strict-mcp-config"]
+        shell = "{0} || {1}".format(shlex.join(resume_cmd), shlex.join(fresh))
+        return ["sh", "-c", shell]
+    return fresh
+
+
+def _fresh_command(
+    project: Path,
+    *,
+    control_home: Path,
+    role: str,
+    arc_ref: Optional[str],
+    arc_text: Optional[str],
+    prism_name: Optional[str],
+    session_id: Optional[str],
+    skip_permissions: bool,
+    dry_run: bool,
+) -> List[str]:
+    """The seeded fresh-launch argv (with ``--session-id`` pinned when given)."""
+    s = seed.seed_for_project(
+        project,
+        role=role,
+        control_home=control_home,
+        arc_ref=arc_ref,
+        arc_text=arc_text,
+        prism_name=prism_name,
+    )
+    title = "tide-{0}".format(project.name)
+    seed_file = DRY_RUN_SEED_FILE if dry_run else str(persist_seed(s, title))
+    profile = context.load_profile(project)
+    command = context.build_launch_command(seed_file, profile)
+    if session_id:
+        command[1:1] = ["--session-id", session_id]  # pin for a future --resume
     if skip_permissions and SKIP_PERMISSIONS not in command:
         command[1:1] = [SKIP_PERMISSIONS]  # after the program, before the flags
     return command

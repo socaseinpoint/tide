@@ -243,9 +243,12 @@ def test_continue_session_with_id_resumes_same_conversation(home_with_project):
     assert bound["resume"] is True
     assert bound["session_id"] == "abc-123"
     cmd = menu.build_launch(proj, control_home=home, dry_run=True, session_id="abc-123", resume=True)
-    assert cmd[0] == "claude"
-    assert "--resume" in cmd and "abc-123" in cmd
-    assert "--append-system-prompt" not in cmd  # resume carries no fresh seed
+    # resume is wrapped so it falls back to a fresh launch if the convo is gone
+    assert cmd[0] == "sh" and cmd[1] == "-c"
+    shell = cmd[2]
+    assert "claude --dangerously-skip-permissions --resume abc-123" in shell
+    assert " || " in shell  # fallback to a fresh seeded launch
+    assert "--session-id abc-123" in shell  # the fallback re-pins the same id
 
 
 def test_build_launch_binds_session_into_seed(home_with_project):
