@@ -27,6 +27,25 @@ from typing import List
 
 from .base import SpawnResult, TerminalAdapter, safe_title
 
+# A spawn against a path Orca does not know about fails nonzero with this code in
+# its JSON error payload (carried on stdout/stderr). It is the ONE failure we
+# can self-heal — register the repo, then retry the create.
+_SELECTOR_NOT_FOUND = "selector_not_found"
+
+
+def _is_unregistered_repo(exc: BaseException) -> bool:
+    """True when *exc* is an Orca failure caused by an unregistered repo path.
+
+    Inspects the failed process's stdout+stderr for the ``selector_not_found``
+    error code Orca emits when ``--worktree path:<cwd>`` points at a path it has
+    never seen. Any other failure (bad command, app down, …) returns False so we
+    never blindly register + retry on an unrelated error.
+    """
+    blob = "{0}{1}".format(
+        getattr(exc, "stdout", "") or "", getattr(exc, "stderr", "") or ""
+    )
+    return _SELECTOR_NOT_FOUND in blob.lower()
+
 
 class OrcaAdapter(TerminalAdapter):
     """Default adapter: ``orca terminal create`` opens a tab running the scoped command."""
@@ -73,19 +92,56 @@ class OrcaAdapter(TerminalAdapter):
 
         try:
             subprocess.run(argv, check=True, capture_output=True, text=True)
-        except (OSError, subprocess.CalledProcessError) as exc:  # pragma: no cover
-            hint = ""
-            stderr = getattr(exc, "stderr", "") or ""
-            if "worktree" in stderr.lower() or "path" in stderr.lower():
-                hint = " (is this project registered with Orca? `orca repo add <path>`)"
-            return SpawnResult(
-                ok=False,
-                detail="Orca spawn failed ({0}){1}; or use '--adapter tmux'".format(exc, hint),
-                commands=[argv],
-            )
+        except (OSError, subprocess.CalledProcessError) as exc:
+            # Self-heal: the ONLY failure we recover from is an unregistered repo
+            # path. Register it once, then retry the create exactly once. Any
+            # other failure (or a still-failing retry) degrades gracefully below.
+            if _is_unregistered_repo(exc) and self._register_repo(cwd):
+                try:
+                    subprocess.run(argv, check=True, capture_output=True, text=True)
+                except (OSError, subprocess.CalledProcessError) as retry_exc:
+                    return self._spawn_failure(retry_exc, argv)
+                return SpawnResult(
+                    ok=True,
+                    ref=safe_title(title),
+                    detail="opened a new Orca tab (after registering repo with Orca)",
+                    commands=[argv],
+                )
+            return self._spawn_failure(exc, argv)
         return SpawnResult(
             ok=True,
             ref=safe_title(title),
             detail="opened a new Orca tab",
+            commands=[argv],
+        )
+
+    def _register_repo(self, cwd: str) -> bool:
+        """Register *cwd* with Orca via ``orca repo add --path <cwd>``; True on attempt.
+
+        Best-effort + idempotent-ish: ``orca repo add`` tolerates an already-known
+        path, so a nonzero exit is not treated as fatal here — we still retry the
+        create. Returns False only when the ``orca`` binary itself cannot be run
+        (so the caller skips the pointless retry).
+        """
+        try:
+            subprocess.run(
+                ["orca", "repo", "add", "--path", cwd],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except OSError:
+            return False
+        return True
+
+    def _spawn_failure(self, exc: BaseException, argv: List[str]) -> SpawnResult:
+        """Build the graceful ``ok=False`` result for a failed ``orca terminal create``."""
+        hint = ""
+        stderr = getattr(exc, "stderr", "") or ""
+        if "worktree" in stderr.lower() or "path" in stderr.lower():
+            hint = " (is this project registered with Orca? `orca repo add <path>`)"
+        return SpawnResult(
+            ok=False,
+            detail="Orca spawn failed ({0}){1}; or use '--adapter tmux'".format(exc, hint),
             commands=[argv],
         )

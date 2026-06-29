@@ -127,6 +127,21 @@ def _register_roster(sub) -> None:
     register_roster(sub)
 
 
+def _register_adopt(sub) -> None:
+    # tide adopt [path] — one-command onboarding: git init + .tide/ scaffold +
+    # Orca repo registration + control-home roster, all idempotent.
+    from .adopt import register as register_adopt
+
+    register_adopt(sub)
+
+
+def _register_mcp(sub) -> None:
+    # tide mcp — per-project scoped MCP management (state/mcp.json + context.json).
+    from .mcp import register as register_mcp
+
+    register_mcp(sub)
+
+
 def _register_menu(sub) -> None:
     # U11: the launcher menu (pick N roster projects → seeded orchestrator sessions).
     # Bare `tide` still prints help; the menu lives under the explicit `tide menu`.
@@ -320,6 +335,8 @@ def build_parser() -> argparse.ArgumentParser:
     _register_strictness(subparsers)
     _register_install_hooks(subparsers)
     _register_roster(subparsers)
+    _register_adopt(subparsers)
+    _register_mcp(subparsers)
     _register_menu(subparsers)
     _register_context(subparsers)
     _register_terminal(subparsers)

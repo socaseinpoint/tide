@@ -86,3 +86,37 @@ def test_session_entries_lists_routine_runs_in_order(tmp_project):
     stream.new_session(tmp_project, "invite-codes", "two")
     names = [p.name for p in stream.session_entries(tmp_project, "invite-codes")]
     assert names == ["01-one", "02-two"]
+
+
+# --- routine run seed carries the procedure (regression: was missing) ------
+
+def test_routine_run_seed_carries_the_procedure(tmp_project):
+    """A routine run's seed must include the routine's ## steps / ## experience.
+
+    Regression: the seed used to carry only the (empty) run passport, so the
+    launched session had no idea what the routine does.
+    """
+    from tide.launcher import seed as seedmod
+    from tide import fields as F
+
+    routine = stream.new_routine(tmp_project, "invite-codes")
+    # write a recognisable procedure onto the routine container's goal doc
+    goal_doc = stream.passport_path(routine)
+    text = goal_doc.read_text(encoding="utf-8").replace(
+        "<the runbook — the reproducible procedure to follow each run>",
+        "STEP ONE: do the issuing. STEP TWO: verify in the DB.",
+    )
+    goal_doc.write_text(text, encoding="utf-8")
+    run = stream.new_session(tmp_project, "invite-codes", "first-run")
+
+    s = seedmod.seed_for_project(
+        tmp_project,
+        arc_ref="first-run",
+        arc_text=(run / "arc.md").read_text(encoding="utf-8"),
+        prism_name="invite-codes",
+        container_kind="routine",
+    )
+    assert "### Routine procedure" in s
+    assert "STEP ONE: do the issuing" in s            # the actual runbook is injected
+    assert "## experience" in s
+    assert "Active routine run" in s

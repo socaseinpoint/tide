@@ -43,6 +43,7 @@ CANON_FILE = "CANON.md"
 CONFIG_FILE = "config"
 STRICTNESS_FILE = "strictness"
 CONTEXT_FILE = "context.json"
+MCP_FILE = "mcp.json"
 DEFERRED_FILE = "deferred.md"
 
 
@@ -84,8 +85,10 @@ def control_home(start: Optional[Path] = None) -> Path:
     1. ``$TIDE_HOME`` — if set, it must point at an existing directory (the
        control-home); a stale/missing path is a clear error, not a silent
        fall-through to the cwd climb.
-    2. Otherwise climb from *start* for a ``.tide/`` ancestor
-       (:func:`require_tide_root`).
+    2. Otherwise climb from *start* for a REAL control-home — a dir carrying
+       ``roster.md`` (:func:`is_control_home`), NOT just any ``.tide/``. A plain
+       project (which has its own ``.tide/``) must never be mistaken for the
+       control-home, or it would scatter a stray roster there.
     """
     env = os.environ.get(TIDE_HOME_ENV)
     if env and env.strip():
@@ -97,7 +100,14 @@ def control_home(start: Optional[Path] = None) -> Path:
                 )
             )
         return home.resolve()
-    return require_tide_root(start)
+    here = Path(start).resolve() if start is not None else Path.cwd().resolve()
+    for candidate in (here, *here.parents):
+        if is_control_home(candidate):
+            return candidate
+    raise FileNotFoundError(
+        "no control-home (a dir with roster.md) found in {0} or any parent — "
+        "set $TIDE_HOME to your control-home".format(here)
+    )
 
 
 def tide_dir(root: Path) -> Path:
@@ -175,6 +185,15 @@ def strictness_file(root: Path) -> Path:
 def context_file(root: Path) -> Path:
     """Path to the per-project launch context profile (``state/context.json``)."""
     return state_dir(root) / CONTEXT_FILE
+
+
+def mcp_file(root: Path) -> Path:
+    """Path to the per-project scoped MCP config (``state/mcp.json``).
+
+    Shape ``{"mcpServers": {<name>: <serverdef>}, "_disabled": {…}}`` — the
+    launch profile's ``mcp_config`` points here when any server is enabled.
+    """
+    return state_dir(root) / MCP_FILE
 
 
 def deferred_file(root: Path) -> Path:

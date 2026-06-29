@@ -132,6 +132,93 @@ def test_orca_spawn_dry_run_builds_terminal_create_without_executing():
     assert "--strict-mcp-config" in launch
 
 
+# --- orca self-heal (register + retry on selector_not_found) ---------------
+
+def _selector_error():
+    """A CalledProcessError mirroring Orca's unregistered-repo failure."""
+    import json as _json
+    import subprocess as _sp
+
+    payload = _json.dumps({"error": {"code": "selector_not_found"}})
+    return _sp.CalledProcessError(returncode=1, cmd=["orca"], output=payload, stderr=payload)
+
+
+def test_orca_self_heals_unregistered_repo(monkeypatch):
+    """A selector_not_found failure → register the repo once, then retry → ok."""
+    import subprocess as _sp
+
+    a = OrcaAdapter()
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/orca")
+
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        # 1st call: terminal create → fail with selector_not_found.
+        # 2nd call: repo add → ok. 3rd call: terminal create retry → ok.
+        if argv[:3] == ["orca", "terminal", "create"] and len(calls) == 1:
+            raise _selector_error()
+        return _sp.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(_sp, "run", fake_run)
+
+    res = a.spawn(command=_LAUNCH, cwd="/p/fresh", title="tide-fresh")
+
+    assert res.ok is True
+    assert "registering repo" in res.detail.lower()
+    # exactly: create (fail) → repo add → create (retry)
+    assert len(calls) == 3
+    assert calls[1] == ["orca", "repo", "add", "--path", "/p/fresh"]
+    assert calls[2][:3] == ["orca", "terminal", "create"]
+
+
+def test_orca_non_selector_failure_does_not_register_or_retry(monkeypatch):
+    """A non-selector failure degrades to ok=False without registering/retrying."""
+    import subprocess as _sp
+
+    a = OrcaAdapter()
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/orca")
+
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        raise _sp.CalledProcessError(returncode=1, cmd=argv, output="boom", stderr="boom")
+
+    monkeypatch.setattr(_sp, "run", fake_run)
+
+    res = a.spawn(command=_LAUNCH, cwd="/p/x", title="tide-x")
+
+    assert res.ok is False
+    # only the single terminal-create attempt — no repo add, no retry.
+    assert len(calls) == 1
+    assert calls[0][:3] == ["orca", "terminal", "create"]
+
+
+def test_orca_self_heal_retry_still_fails_returns_graceful(monkeypatch):
+    """If the retry also fails, the adapter returns the graceful ok=False result."""
+    import subprocess as _sp
+
+    a = OrcaAdapter()
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/orca")
+
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        if argv[:3] == ["orca", "terminal", "create"]:
+            raise _selector_error()
+        return _sp.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(_sp, "run", fake_run)
+
+    res = a.spawn(command=_LAUNCH, cwd="/p/x", title="tide-x")
+
+    assert res.ok is False
+    # create (fail) → repo add (ok) → create retry (fail again) = 3 calls.
+    assert len(calls) == 3
+
+
 # --- SpawnResult / helpers -------------------------------------------------
 
 def test_spawn_result_defaults():
