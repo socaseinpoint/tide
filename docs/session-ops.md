@@ -1,4 +1,7 @@
-# Session operations — флот (offload) / handoff / branch
+# Session operations — offload / handoff / branch(?)
+
+> Naming: the dump op is **offload** (not "флот"). "branch" is a placeholder name —
+> see the branch section; a better word is wanted.
 
 The three human-triggered operations on a **session** (one run inside a prism).
 Outside these, the agent leaves the stream alone (minimal mode). Captured from the
@@ -9,7 +12,7 @@ design conversation; OPEN questions marked ⛏.
 - **session** — one run inside a prism; numbered; chained by `from:`.
 - Each session passport carries `## cursor` (resume point) + `## context` (memory).
 
-## флот (offload)
+## offload
 - Dump the session's **current** work into its arc: append to `## context`, refresh `## cursor`.
 - **Incremental** — only what's new since the last offload. Nothing new → writes nothing and
   says so.
@@ -21,15 +24,19 @@ design conversation; OPEN questions marked ⛏.
   - Split of labor: the **skill** measures the transcript size (Claude Code session internals) and
     distills the slice; the **CLI** stores/reads the marker + appends text (deterministic, testable).
 
-## handoff = offload + new session carrying prior context
-- Run offload first, then create a NEW session with `from: <this session>`.
+## handoff = continue the SAME prism in a fresh session
+- Use when you want to keep going on this work-line but in a clean session.
+- offload first, then create a NEW **session** in the **same prism** with `from: <this session>`.
 - Opens a fresh **Orca terminal** (the existing `/handoff` skill already does this).
-- The handoff distillation states: **what was done · what's left undone · where it's heading**.
-- New session is seeded with that carried context.
+- Writes the session `title:` + `## summary`: **what was done · what's left undone · where it's
+  heading** (longer if the session is large). The new session is seeded with that.
 
-## branch = offload + new session forked from a marked point
-- Like handoff (offload + new session, `from:` set) but a **fork** from the point the session was
-  at — both branch and handoff record `from:` so lineage is visible.
+## branch = start a NEW prism from an idea that surfaced here
+- Use when a tangential idea pops up that you do NOT want to continue in this work-line — spin it
+  into its **own new prism** (a new нить), quickly, and jump there.
+- offload first, then create a NEW **prism** (+ its first session) recording where it came from.
+- ⛏ **Name "branch" is a placeholder** — wanted: a word for "surfaced idea → new work-line".
+  Candidates: **spark** · spinoff · sprout · offshoot · tangent. (light-through-a-prism theme.)
 
 ## picker sub-choice (on continuing an existing session)
 - When you pick an existing session in `tide menu`, it asks:

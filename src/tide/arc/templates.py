@@ -86,7 +86,7 @@ def session_md(name: str) -> str:
         "<where this session left off; the next concrete step to pick up>\n"
         "\n"
         "## context\n"
-        "<session memory — offload (флот) appends new context here, incrementally>\n"
+        "<session memory — offload appends new context here, incrementally>\n"
     ).format(name=name)
 
 

@@ -13,12 +13,15 @@ Just do the work and report in plain language. Don't load the context with tide 
 
 ## Arcs are touched ONLY by the human's three operations
 The session's arc gets written **only** when the human triggers one of:
-- **флот (offload)** — dump the current context into this session's `## context` / `## cursor`.
-- **handoff** — carry this session's thread into a FRESH session (opens an Orca terminal).
-- **branch** — start a new session (or prism) from here.
+- **offload** — dump the new context since the last offload into this session's `## context`,
+  refresh `## cursor`. Incremental; nothing new → say so and write nothing.
+- **handoff** — offload, then carry this work-line forward into a FRESH session in the SAME prism
+  (opens an Orca terminal); writes the session's title + summary (done / undone / heading).
+- **branch** — offload, then start a NEW prism (a new work-line) from an idea that surfaced here.
 
 Outside those, leave the stream alone.
 
 ## Where you are
 Resume from the bound session's **`## cursor`**. When the human triggers offload / handoff /
-branch, update `## cursor` + `## context` so the next session picks up cleanly. That's it.
+branch, update `## cursor` + `## context` (and on handoff, the `title:` + `## summary`) so the
+next session picks up cleanly. That's it.
