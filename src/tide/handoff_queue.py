@@ -1,0 +1,294 @@
+"""tide.handoff_queue — the two-stage handoff queue (offer → confirmed pickup).
+
+The old handoff PUSHED: a chat distilled itself and tried to spawn a new session
+(osascript keystroke into Orca). That spawn lies — it reports success even when the
+keystroke never lands, and the offering chat never learns whether anyone actually
+took over.
+
+This decouples the two halves into a small on-disk QUEUE in the control-home
+(``.tide/handoffs/``):
+
+* **offer** (stage 1) — the offering chat writes a pending record (``status:
+  offered``) pointing at its seed. No spawn dependency: the offer just *hangs*.
+* **confirm** (stage 2) — when a fresh session gets its FIRST human message, a
+  ``UserPromptSubmit`` hook (:func:`cmd_handoff_confirm`) claims the matching
+  pending offer and flips it to ``status: taken`` (stamping who/when). The first
+  human message is the proof a real pickup happened — not a spawn's say-so.
+
+``tide handoffs`` lists what is hanging; ``tide handoffs take`` is the manual
+equivalent of the confirm hook. Pure functions do the JSON/markdown I/O
+(argparse-free, unit-testable); :func:`register` / :func:`cmd_handoff_confirm`
+wire the thin CLI + hook handlers.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import sys
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional
+
+from . import io as _io, numbering, paths, slug
+from .arc.stream import StreamError
+
+STATUS_OFFERED = "offered"
+STATUS_TAKEN = "taken"
+DEFAULT_MODE = "continue"
+
+# A handoff record file: NN-<slug>.md (2+ digit number, base-10 padding).
+_HANDOFF_RE = re.compile(r"^(\d{2,})-(.+)\.md$")
+
+
+# A handoff record is OUR own simple `key: value` format — read/written with these
+# local helpers (NOT the shared tide.fields, whose whitelist excludes handoff keys).
+def _get(text: str, key: str, default: str = "-") -> str:
+    """First ``key: value`` line's value in *text* (stripped), or *default*."""
+    prefix = key + ":"
+    for line in text.splitlines():
+        if line.startswith(prefix):
+            return line[len(prefix):].strip() or default
+    return default
+
+
+def _set_field(path: Path, key: str, value: str) -> None:
+    """Replace the ``key: …`` line in *path* with ``key: value`` (atomic write)."""
+    prefix = key + ":"
+    lines = path.read_text(encoding="utf-8").splitlines()
+    for i, line in enumerate(lines):
+        if line.startswith(prefix):
+            lines[i] = "{0} {1}".format(prefix, value)
+            break
+    _io.atomic_write(path, "\n".join(lines) + "\n")
+
+
+class HandoffError(StreamError):
+    """A user-facing handoff-queue error (empty slug, unknown id, no home)."""
+
+
+def _now() -> str:
+    """Current local timestamp to seconds (own helper so tests can monkeypatch)."""
+    return datetime.now().isoformat(timespec="seconds")
+
+
+# --- record construction / parsing -----------------------------------------
+
+def _record_md(name: str, *, mode: str, arc: str, project: str, seed: str,
+               from_session: str, created: str, note: str) -> str:
+    """The markdown body of a fresh OFFERED handoff record."""
+    return (
+        "# handoff {name}\n\n"
+        "status: {status}\n"
+        "mode: {mode}\n"
+        "arc: {arc}\n"
+        "project: {project}\n"
+        "seed: {seed}\n"
+        "from-session: {frm}\n"
+        "created: {created}\n"
+        "taken-by: -\n"
+        "taken-at: -\n\n"
+        "## note\n{note}\n"
+    ).format(
+        name=name, status=STATUS_OFFERED, mode=mode or DEFAULT_MODE, arc=arc or "-",
+        project=project or "-", seed=seed or "-", frm=from_session or "-",
+        created=created, note=(note or "(none)"),
+    )
+
+
+def _parse(path: Path) -> Optional[Dict[str, object]]:
+    """Parse a handoff record file into a dict, or None if it isn't one."""
+    m = _HANDOFF_RE.match(path.name)
+    if not m:
+        return None
+    text = path.read_text(encoding="utf-8")
+    return {
+        "path": path,
+        "name": path.stem,
+        "num": m.group(1),
+        "slug": m.group(2),
+        "status": _get(text, "status", STATUS_OFFERED),
+        "mode": _get(text, "mode", DEFAULT_MODE),
+        "arc": _get(text, "arc"),
+        "project": _get(text, "project"),
+        "seed": _get(text, "seed"),
+        "from_session": _get(text, "from-session"),
+        "created": _get(text, "created"),
+        "taken_by": _get(text, "taken-by"),
+        "taken_at": _get(text, "taken-at"),
+    }
+
+
+# --- operations (pure-ish: read/write the queue dir) -----------------------
+
+def offer(home: Path, raw_slug: str, *, arc: str, project: str, seed: str,
+          mode: str = DEFAULT_MODE, from_session: Optional[str] = None,
+          note: Optional[str] = None) -> Path:
+    """Hang a pending handoff offer in *home*'s queue; return the record path."""
+    s = slug.short_slug(raw_slug)
+    if not s:
+        raise HandoffError("handoff: empty slug after slugify")
+    cdir = paths.handoffs_dir(Path(home))
+    cdir.mkdir(parents=True, exist_ok=True)
+    nn = numbering.next_num_file(cdir)
+    name = "{0}-{1}".format(nn, s)
+    path = cdir / "{0}.md".format(name)
+    _io.atomic_write(path, _record_md(
+        name, mode=mode, arc=arc, project=project, seed=seed,
+        from_session=from_session or "-", created=_now(), note=note or "",
+    ))
+    return path
+
+
+def list_offers(home: Path, *, status: Optional[str] = None) -> List[Dict[str, object]]:
+    """Return queue records (filename order), optionally filtered by *status*."""
+    cdir = paths.handoffs_dir(Path(home))
+    if not cdir.is_dir():
+        return []
+    out: List[Dict[str, object]] = []
+    for p in sorted(cdir.glob("*.md")):
+        rec = _parse(p)
+        if rec and (status is None or rec["status"] == status):
+            out.append(rec)
+    return out
+
+
+def _resolve(home: Path, key: str) -> Dict[str, object]:
+    """Find a record by NN, NN-slug, or slug; raise if absent/ambiguous-miss."""
+    want = (key or "").strip()
+    recs = list_offers(home)
+    for r in recs:
+        if want in (r["num"], r["name"], r["slug"]):
+            return r
+    raise HandoffError("handoff: no offer matching {0!r}".format(key))
+
+
+def _mark_taken(rec: Dict[str, object], *, session: Optional[str]) -> Dict[str, object]:
+    """Flip a record to taken, stamping who/when (mutates the file)."""
+    path = rec["path"]
+    _set_field(path, "status", STATUS_TAKEN)
+    _set_field(path, "taken-by", session or "-")
+    _set_field(path, "taken-at", _now())
+    return _parse(path)
+
+
+def take(home: Path, key: str, *, session: Optional[str] = None) -> Dict[str, object]:
+    """Explicitly confirm pickup of offer *key* (manual equivalent of the hook)."""
+    return _mark_taken(_resolve(home, key), session=session)
+
+
+def confirm_for_project(home: Path, project: str, *, session: Optional[str] = None
+                        ) -> Optional[Dict[str, object]]:
+    """Claim the NEWEST still-offered handoff for *project* (the confirm hook's core).
+
+    Returns the claimed record, or None when nothing is hanging for this project —
+    so the hook is a silent no-op in any ordinary session.
+    """
+    pending = [r for r in list_offers(home, status=STATUS_OFFERED) if r["project"] == project]
+    if not pending:
+        return None
+    newest = pending[-1]  # filename NN order → last is most recent
+    return _mark_taken(newest, session=session)
+
+
+# --- render ----------------------------------------------------------------
+
+def render_list(home: Path) -> str:
+    """Human view: pending offers first, then recently taken ones."""
+    recs = list_offers(home)
+    if not recs:
+        return "(no handoffs)"
+    lines: List[str] = []
+    for r in recs:
+        if r["status"] == STATUS_OFFERED:
+            lines.append("  ⌛ {0}  [{1}]  {2} · arc {3}  (offered {4})".format(
+                r["name"], r["mode"], r["project"], r["arc"], r["created"]))
+    for r in recs:
+        if r["status"] == STATUS_TAKEN:
+            lines.append("  ✓ {0}  [{1}]  {2}  (taken {3} by {4})".format(
+                r["name"], r["mode"], r["project"], r["taken_at"], r["taken_by"]))
+    return "\n".join(lines)
+
+
+# --- CLI + hook wiring ------------------------------------------------------
+
+def _home() -> Path:
+    return paths.control_home()
+
+
+def _cmd_offer(args) -> int:
+    note = " ".join(args.note) if getattr(args, "note", None) else None
+    path = offer(
+        _home(), args.slug, arc=args.arc or "-", project=args.project or "-",
+        seed=args.seed or "-", mode=getattr(args, "mode", DEFAULT_MODE) or DEFAULT_MODE,
+        from_session=getattr(args, "from_session", None), note=note,
+    )
+    print("tide: handoff offered {0} (status: offered)".format(path.name))
+    return 0
+
+
+def _cmd_list(args) -> int:
+    print(render_list(_home()))
+    return 0
+
+
+def _cmd_take(args) -> int:
+    rec = take(_home(), args.key, session=getattr(args, "session", None))
+    print("tide: handoff {0} → taken".format(rec["name"]))
+    return 0
+
+
+def cmd_handoff_confirm(args) -> int:
+    """``tide hook handoff-confirm`` — UserPromptSubmit: claim a pending handoff.
+
+    Fired on every user message; the FIRST one in a freshly-picked-up session is
+    what confirms the handoff. Resolves the cwd project + control-home, claims the
+    newest offer for that project, and stamps the session id (read from the hook's
+    stdin JSON when present). Fully defensive: outside a tide project, with nothing
+    pending, or on any error it prints nothing and exits 0 — a hook must never break
+    a session, and re-firing on later messages is a harmless no-op (already taken).
+    """
+    try:
+        root = paths.find_tide_root()
+        if root is None:
+            return 0
+        home = paths.control_home()
+        session = None
+        try:
+            payload = json.loads(sys.stdin.read() or "{}")
+            session = payload.get("session_id") or payload.get("session")
+        except (ValueError, OSError):
+            session = None
+        claimed = confirm_for_project(home, root.resolve().name, session=session)
+        if claimed:
+            print("tide: handoff {0} confirmed — picked up here".format(claimed["name"]))
+    except Exception as exc:  # noqa: BLE001  a hook must never raise
+        print("tide: [handoff-confirm] skipped: {0}".format(exc), file=sys.stderr)
+    return 0
+
+
+def register(subparsers) -> None:
+    """Add the top-level ``handoffs`` command group (called by cli.py)."""
+    p = subparsers.add_parser("handoffs", help="two-stage handoff queue (offer/list/take)")
+    hsub = p.add_subparsers(dest="handoffs_cmd")
+
+    op = hsub.add_parser("offer", help="hang a pending handoff offer")
+    op.add_argument("slug")
+    op.add_argument("--arc", help="target arc ref the handoff anchors on")
+    op.add_argument("--project", help="project the work belongs to (roster name)")
+    op.add_argument("--seed", help="path to the prepared handoff seed file")
+    op.add_argument("--mode", default=DEFAULT_MODE, help="continue|execution|close (default: continue)")
+    op.add_argument("--from", dest="from_session", help="origin session id")
+    op.add_argument("note", nargs="*", help="free-form note")
+    op.set_defaults(func=_cmd_offer, _cmd="handoffs offer")
+
+    lp = hsub.add_parser("list", help="list pending + recently-taken handoffs")
+    lp.set_defaults(func=_cmd_list, _cmd="handoffs list")
+
+    tp = hsub.add_parser("take", help="confirm pickup of an offer (NN/slug)")
+    tp.add_argument("key")
+    tp.add_argument("--session", help="claiming session id (recorded as taken-by)")
+    tp.set_defaults(func=_cmd_take, _cmd="handoffs take")
+
+    # bare `tide handoffs` behaves like `tide handoffs list`
+    p.set_defaults(func=_cmd_list, _cmd="handoffs")

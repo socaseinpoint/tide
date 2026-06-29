@@ -35,12 +35,14 @@ HOOKS_KEY = "hooks"
 
 SESSION_START_EVENT = "SessionStart"
 PRE_TOOL_USE_EVENT = "PreToolUse"
+USER_PROMPT_EVENT = "UserPromptSubmit"
 
 SESSION_START_CMD = "tide hook session-start"
 EDIT_GATE_CMD = "tide hook edit-gate"
 EDIT_MATCHER = "Edit|Write|MultiEdit"
 ROLE_GATE_CMD = "tide hook role-gate"
 ROLE_GATE_MATCHER = "Write|Edit|NotebookEdit|Bash"
+HANDOFF_CONFIRM_CMD = "tide hook handoff-confirm"
 
 
 class InstallError(StreamError):
@@ -138,6 +140,20 @@ def merge_role_gate(hooks: dict) -> bool:
     return True
 
 
+def merge_user_prompt(hooks: dict) -> bool:
+    """Append the UserPromptSubmit handoff-confirm entry to *hooks*; return changed.
+
+    The first human message in a freshly-picked-up session is what confirms a
+    pending handoff (status offered → taken). Fires on every prompt but is a no-op
+    once nothing is offered for the project. No-op (False) when already wired.
+    """
+    groups = hooks.setdefault(USER_PROMPT_EVENT, [])
+    if _command_present(groups, HANDOFF_CONFIRM_CMD):
+        return False
+    groups.append({HOOKS_KEY: [_hook_block(HANDOFF_CONFIRM_CMD)]})
+    return True
+
+
 def merge_hooks(data: dict) -> List[str]:
     """Merge both tide hook entries into a settings *data* dict; return notes.
 
@@ -160,6 +176,8 @@ def merge_hooks(data: dict) -> List[str]:
         notes.append(
             "{0} [{1}] → {2}".format(PRE_TOOL_USE_EVENT, ROLE_GATE_MATCHER, ROLE_GATE_CMD)
         )
+    if merge_user_prompt(hooks):
+        notes.append("{0} → {1}".format(USER_PROMPT_EVENT, HANDOFF_CONFIRM_CMD))
     return notes
 
 
@@ -222,3 +240,10 @@ def register_hook_group(subparsers) -> None:
         help="PreToolUse: deny orchestrator from doing worker-work (Write/Edit/mutating Bash)",
     )
     rg.set_defaults(func=role_gate.cmd_role_gate, _cmd="hook role-gate")
+
+    hc = hsub.add_parser(
+        "handoff-confirm",
+        help="UserPromptSubmit: first message confirms a picked-up handoff offer",
+    )
+    from ..handoff_queue import cmd_handoff_confirm  # lazy: avoid import cycle
+    hc.set_defaults(func=cmd_handoff_confirm, _cmd="hook handoff-confirm")

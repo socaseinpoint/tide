@@ -483,5 +483,5 @@ def test_install_hooks_writes_role_gate(tmp_project):
         if isinstance(h, dict)
     ]
     assert install.ROLE_GATE_CMD in all_cmds
-    # Three notes on first install: SessionStart + edit-gate + role-gate.
-    assert len(notes) == 3
+    # Four notes on first install: SessionStart + edit-gate + role-gate + handoff-confirm.
+    assert len(notes) == 4

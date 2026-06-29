@@ -278,6 +278,14 @@ def _register_candidate(sub) -> None:
     register_candidate(sub)
 
 
+def _register_handoffs(sub) -> None:
+    # two-stage handoff queue: offer (stage 1) → confirmed pickup (stage 2, via the
+    # UserPromptSubmit hook). `tide handoffs` lists what is hanging in the control-home.
+    from .handoff_queue import register as register_handoffs
+
+    register_handoffs(sub)
+
+
 def _register_canon(sub) -> None:
     # U2: real canon group (init/rev/merge live; status stubbed for U8).
     # ``cannon`` is a hidden CLI alias registered inside commands.register().
@@ -356,6 +364,7 @@ def build_parser() -> argparse.ArgumentParser:
     _register_arc(subparsers)
     _register_reconcile(subparsers)
     _register_candidate(subparsers)
+    _register_handoffs(subparsers)
     _register_canon(subparsers)
     _register_contract(subparsers)
 

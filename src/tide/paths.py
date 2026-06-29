@@ -178,6 +178,17 @@ def state_dir(root: Path) -> Path:
     return tide_dir(root) / STATE_DIRNAME
 
 
+def handoffs_dir(root: Path) -> Path:
+    """Path to the two-stage handoff queue (``.tide/handoffs/``).
+
+    A control-home holds the pending-handoff offers here: each is a small markdown
+    record an offering session writes (status: offered) and a picking-up session
+    confirms (status: taken) — decoupling "chat offered a handoff" from "another
+    chat actually took it" (no reliance on a fragile spawn).
+    """
+    return tide_dir(root) / "handoffs"
+
+
 def strictness_file(root: Path) -> Path:
     return state_dir(root) / STRICTNESS_FILE
 
