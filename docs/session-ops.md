@@ -37,6 +37,24 @@ design conversation; OPEN questions marked ⛏.
 - ⛏ "same context" = literal `claude --resume <id>` of that conversation, OR re-seed a fresh
   session from the session's arc/cursor? (Different mechanisms — needs a decision.)
 
+## Session title + summary (for reading sessions later)
+- Each session has an **index** (its NN number), a **title:** (human, one line), and a
+  **## summary** — a few plain sentences: what got done, what's unfinished, where it's heading.
+  Written on **handoff** (and offload); longer if the session is large.
+- The picker shows the title so you can tell sessions apart. (Foundation shipped: `title:`,
+  `## summary`, `offloaded-at:` in the session template; picker lists the title.)
+
+## Interactive TUI picker (UX — requested)
+- The picker must be **arrow-key navigable** (move ↑/↓ between options, Enter to choose) and
+  nicely formatted — not "type a number". Applies to project → prism → session steps.
+- Stdlib-only constraint → `curses` (no deps). Must **degrade gracefully**: when stdin/stdout is
+  not a TTY (pipes, `--pick`, tests) fall back to the current numbered/`0=new` text path.
+
+## ⛏ Open question — picker "same context vs handoff"
+When continuing an existing session the picker asks: **same context** or **handoff to new**.
+"Same context" = literal `claude --resume <id>` of that conversation, OR re-seed a fresh session
+from the arc/cursor? Different mechanisms — needs a decision before the sub-choice is built.
+
 ## Build sketch (once OPEN questions close)
 - CLI primitive: `tide session offload <prism> <session> [text]` — dumb appender (incrementality
   lives in the skill, variant A). `tide arc new-session --from <ref>` already sets `from:`.
