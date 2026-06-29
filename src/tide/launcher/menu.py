@@ -654,6 +654,18 @@ def launch_handoff(
         seed_file=seed_path, session_id=session_id,
         skip_permissions=skip_permissions, dry_run=dry_run,
     )
+    # Register the picked-up session so it's RESUMABLE from the menu later: pin the
+    # new claude session id onto the handoff's target session passport. The seed
+    # lives at <session>/input/<seed>, so the passport is <session>/arc.md. After the
+    # first turn persists the conversation, `tide menu → … → that session` resumes it.
+    if not dry_run:
+        try:
+            from .. import fields
+            passport = Path(seed_path).parent.parent / "arc.md"
+            if passport.is_file():
+                fields.set_field(passport, "claude-session", session_id)
+        except Exception:  # noqa: BLE001  registration is best-effort, never fatal
+            pass
     # NB: no handoff_queue.take() here — the offer stays OFFERED until the picked-up
     # session's first message confirms it (handoff-confirm hook). Issuing the spawn
     # is not proof the session opened.

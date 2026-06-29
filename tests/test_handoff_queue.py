@@ -146,6 +146,38 @@ def test_launch_handoff_seeds_but_stays_offered_until_confirmed(tmp_control_home
     assert not hq.list_offers(tmp_control_home, status=hq.STATUS_TAKEN)
 
 
+def test_launch_handoff_pins_session_id_for_menu_resume(tmp_control_home, tmp_path):
+    # After pickup the session must be RESUMABLE from the menu: the new claude
+    # session id is pinned onto the handoff's target session passport.
+    from tide.launcher import menu
+    from tide.adapters import SpawnResult
+    from tide import fields
+    from tide.init_home import scaffold_project
+
+    proj = tmp_path / "tide-stack"
+    proj.mkdir()
+    scaffold_project(proj, name="tide-stack")
+    # a session dir with input/<seed> + arc.md (the handoff's target shape)
+    sess = proj / ".tide" / "arcs" / "01-@prz" / "arcs" / "01-session"
+    (sess / "input").mkdir(parents=True)
+    (sess / "arc.md").write_text("# 01-session\nstatus: active\n", encoding="utf-8")
+    seed = sess / "input" / "handoff-seed.md"
+    seed.write_text("# distil\n", encoding="utf-8")
+    hq.offer(tmp_control_home, "stab", arc="01-@prz/01-session", project="tide-stack", seed=str(seed))
+    rec = hq.list_offers(tmp_control_home)[0]
+
+    class FakeAdapter:
+        def spawn(self, *, command, cwd, title, dry_run):
+            return SpawnResult(ok=True, detail="spawned", commands=[command])
+
+    menu.launch_handoff(
+        rec, [{"name": "tide-stack", "path": str(proj)}],
+        control_home=tmp_control_home, adapter=FakeAdapter(), dry_run=False,
+    )
+    pinned = fields.read_field(sess / "arc.md", "claude-session")
+    assert pinned and len(pinned) > 10  # a uuid was stamped → menu can --resume it
+
+
 def test_install_hooks_wires_user_prompt_submit(tmp_project):
     from tide.hooks.install import install_hooks, HANDOFF_CONFIRM_CMD, USER_PROMPT_EVENT
     import json
