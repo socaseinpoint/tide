@@ -22,9 +22,10 @@ import re
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from .. import paths, roster
+from .. import fields, paths, roster, slug
 from ..adapters import SETTINGS_KEY, SpawnResult, get_adapter, resolve_from_settings
 from ..adapters.base import persist_seed
+from ..arc import stream
 from ..arc.stream import StreamError
 from . import context, seed
 
@@ -114,6 +115,114 @@ def select_entries(entries: List[Dict[str, str]], raw: str) -> List[Dict[str, st
     return [entries[i - 1] for i in picks]
 
 
+# --- thread (нить) selection -----------------------------------------------
+# After a project is picked, the human binds the session to a thread: continue an
+# open one or start new. A thread is a kind: thread arc (one session's memory);
+# the bound slug becomes the seed's arc_ref. See tide.arc.stream.
+
+THREAD_NEW = "new"  # sentinel pick for the "+ new thread" row
+
+
+def list_threads(project: Path) -> List[Dict[str, str]]:
+    """A project's open threads for the picker: ``[{slug, goal, path}, …]`` in order."""
+    out = []
+    for entry in stream.thread_entries(project):
+        goal = (fields.read_field(stream.passport_path(entry), "goal") or "").strip()
+        out.append(
+            {"slug": slug.entry_slug(entry.name), "goal": goal, "path": str(entry)}
+        )
+    return out
+
+
+def render_thread_menu(project_name: str, threads: List[Dict[str, str]]) -> str:
+    """Numbered thread pick-list for *project_name*, ending with a '+ new thread' row."""
+    lines = ["Thread (нить) for {0} — continue one or start new:".format(project_name)]
+    for i, t in enumerate(threads, start=1):
+        goal = t.get("goal") or ""
+        suffix = " — {0}".format(goal) if goal and not goal.startswith("<") else ""
+        lines.append("  {0}) {1}{2}".format(i, t["slug"], suffix))
+    lines.append("  {0}) + new thread".format(len(threads) + 1))
+    return "\n".join(lines)
+
+
+def parse_thread_choice(raw: str, count: int):
+    """Map a thread pick to a 1-based index (``1..count``) or :data:`THREAD_NEW`.
+
+    Empty / ``n`` / ``new`` / the ``count+1`` row → new; a number in ``1..count``
+    → that thread. Raises :class:`MenuError` on a garbage or out-of-range pick.
+    """
+    s = (raw or "").strip().lower()
+    if s in ("", "n", "new", "+"):
+        return THREAD_NEW
+    if not s.isdigit():
+        raise MenuError("thread: invalid pick {0!r} (a number or 'new')".format(raw))
+    n = int(s)
+    if n == count + 1:
+        return THREAD_NEW
+    if 1 <= n <= count:
+        return n
+    raise MenuError("thread: pick {0} out of range (1..{1})".format(n, count + 1))
+
+
+def create_thread(project: Path, name: str) -> Optional[str]:
+    """Create a new thread in *project*; return its bound arc_ref (slug), or None
+    when *name* is blank (the human skipped)."""
+    name = (name or "").strip()
+    if not name:
+        return None
+    entry = stream.new_thread(project, name)
+    return slug.entry_slug(entry.name)
+
+
+def touch_thread(project: Path, thread_path: str) -> None:
+    """Re-stamp a continued thread's canon-rev — links the re-entry, no work-gate."""
+    stream.stamp_rev(Path(thread_path), project)
+
+
+def prompt_thread(project: Path, project_name: str) -> Optional[str]:
+    """Interactively bind a thread for *project*: continue one or start new.
+
+    Returns the bound arc_ref (thread slug), or None when the human skips (an
+    empty new-thread name).
+    """
+    threads = list_threads(project)
+    print(render_thread_menu(project_name, threads))
+    try:
+        raw = input("thread> ")
+    except EOFError:
+        raw = ""
+    choice = parse_thread_choice(raw, len(threads))
+    if choice == THREAD_NEW:
+        try:
+            name = input("new thread name> ")
+        except EOFError:
+            name = ""
+        return create_thread(project, name)
+    chosen = threads[choice - 1]
+    touch_thread(project, chosen["path"])
+    return chosen["slug"]
+
+
+def resolve_thread(
+    project: Path,
+    project_name: str,
+    *,
+    thread_ref: Optional[str] = None,
+    new_thread: Optional[str] = None,
+    interactive: bool = False,
+) -> Optional[str]:
+    """Bind a thread for one chosen project. A flag wins; else prompt when
+    interactive; else None (no thread). ``--new-thread`` creates; ``--thread``
+    continues a named one."""
+    if new_thread:
+        return create_thread(project, new_thread)
+    if thread_ref:
+        return thread_ref
+    if interactive:
+        return prompt_thread(project, project_name)
+    return None
+
+
 # --- launch ----------------------------------------------------------------
 
 def build_launch(
@@ -121,15 +230,20 @@ def build_launch(
     *,
     control_home: Path,
     role: str = DEFAULT_ROLE,
+    arc_ref: Optional[str] = None,
     dry_run: bool = False,
 ) -> List[str]:
     """Resolve seed + context profile into the scoped ``claude …`` argv for *project*.
 
-    On a real launch the seed is persisted (so the new session can read it by path);
-    on a dry-run nothing is written and a placeholder seed-file token is used, so the
-    printed command still shows the exact scoped shape.
+    When *arc_ref* names a thread (нить), the seed carries that thread's passport
+    so the session opens already bound to it. On a real launch the seed is
+    persisted (so the new session can read it by path); on a dry-run nothing is
+    written and a placeholder seed-file token is used, so the printed command
+    still shows the exact scoped shape.
     """
-    s = seed.seed_for_project(project, role=role, control_home=control_home)
+    s = seed.seed_for_project(
+        project, role=role, control_home=control_home, arc_ref=arc_ref
+    )
     title = "tide-{0}".format(project.name)
     seed_file = DRY_RUN_SEED_FILE if dry_run else str(persist_seed(s, title))
     profile = context.load_profile(project)
@@ -144,10 +258,18 @@ def launch_entry(
     role: str = DEFAULT_ROLE,
     dry_run: bool = False,
 ) -> SpawnResult:
-    """Build the scoped launch command for one rostered project and spawn it."""
+    """Build the scoped launch command for one rostered project and spawn it.
+
+    A resolved thread is carried on the entry under the ``"thread"`` key (the
+    arc_ref the seed binds to); absent ⇒ no thread binding.
+    """
     project = Path(entry["path"]).expanduser()
     command = build_launch(
-        project, control_home=control_home, role=role, dry_run=dry_run
+        project,
+        control_home=control_home,
+        role=role,
+        arc_ref=entry.get("thread"),
+        dry_run=dry_run,
     )
     title = "tide-{0}".format(entry["name"])
     return adapter.spawn(
@@ -221,7 +343,13 @@ def launch_preview(
     out = []
     for entry in chosen:
         project = Path(entry["path"]).expanduser()
-        command = build_launch(project, control_home=control_home, role=role, dry_run=True)
+        command = build_launch(
+            project,
+            control_home=control_home,
+            role=role,
+            arc_ref=entry.get("thread"),
+            dry_run=True,
+        )
         out.append((entry["name"], " ".join(command)))
     return out
 
@@ -254,6 +382,22 @@ def cmd_menu(args) -> int:
     dry_run = bool(getattr(args, "dry_run", False))
     debug = bool(getattr(args, "debug", False))
     role = getattr(args, "role", None) or DEFAULT_ROLE
+
+    # Bind a thread (нить) to each chosen project: continue an open one or start
+    # new. A flag wins; else prompt when the project pick itself was interactive.
+    interactive = not getattr(args, "pick", None)
+    thread_ref = getattr(args, "thread", None)
+    new_thread = getattr(args, "new_thread", None)
+    chosen = [
+        {**entry, "thread": resolve_thread(
+            Path(entry["path"]).expanduser(),
+            entry["name"],
+            thread_ref=thread_ref,
+            new_thread=new_thread,
+            interactive=interactive,
+        )}
+        for entry in chosen
+    ]
 
     # --debug (real launch) and --dry-run (no launch) both show the human EXACTLY
     # what scoped session will run — the resolved claude argv (strict MCP scoping
@@ -289,6 +433,17 @@ def register(subparsers) -> None:
     )
     p.add_argument("--adapter", help="terminal adapter (orca|tmux; default from settings)")
     p.add_argument("--role", help="session role (default: orchestrator)")
+    p.add_argument(
+        "--thread",
+        metavar="SLUG",
+        help="continue an existing thread (нить) by slug — bind the session to it",
+    )
+    p.add_argument(
+        "--new-thread",
+        dest="new_thread",
+        metavar="NAME",
+        help="start a fresh thread (нить) with this name and bind the session to it",
+    )
     p.add_argument(
         "--dry-run",
         action="store_true",

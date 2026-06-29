@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from tide import cli, roster
@@ -160,6 +162,73 @@ def test_cli_menu_debug_prints_scoped_command(home_with_project, monkeypatch, ca
     out = capsys.readouterr().out
     assert "proj scoped command:" in out
     assert "claude --strict-mcp-config" in out
+
+
+# --- thread (нить) selection -----------------------------------------------
+
+def test_parse_thread_choice_new_on_empty_or_keyword():
+    assert menu.parse_thread_choice("", 2) == menu.THREAD_NEW
+    assert menu.parse_thread_choice("new", 2) == menu.THREAD_NEW
+    assert menu.parse_thread_choice("3", 2) == menu.THREAD_NEW  # the count+1 row
+
+
+def test_parse_thread_choice_index_and_bad():
+    assert menu.parse_thread_choice("2", 3) == 2
+    with pytest.raises(menu.MenuError):
+        menu.parse_thread_choice("9", 3)
+    with pytest.raises(menu.MenuError):
+        menu.parse_thread_choice("x", 3)
+
+
+def test_list_threads_only_threads(home_with_project):
+    _, proj = home_with_project
+    from tide.arc import stream
+    stream.new_arc(proj, "just-work")
+    stream.new_thread(proj, "morning")
+    threads = menu.list_threads(proj)
+    assert [t["slug"] for t in threads] == ["morning"]
+
+
+def test_render_thread_menu_has_new_row(home_with_project):
+    _, proj = home_with_project
+    from tide.arc import stream
+    stream.new_thread(proj, "morning")
+    out = menu.render_thread_menu("proj", menu.list_threads(proj))
+    assert "1) morning" in out
+    assert "+ new thread" in out
+
+
+def test_create_thread_returns_slug_and_persists(home_with_project):
+    _, proj = home_with_project
+    from tide.arc import stream
+    ref = menu.create_thread(proj, "deep work")
+    assert ref == "deep-work"
+    assert [t["slug"] for t in menu.list_threads(proj)] == ["deep-work"]
+    assert menu.create_thread(proj, "  ") is None  # blank → skip
+
+
+def test_build_launch_binds_thread_into_seed(home_with_project):
+    home, proj = home_with_project
+    from tide.arc import stream
+    stream.new_thread(proj, "my session")
+    # a real (non-dry) build persists a seed carrying the bound thread passport
+    command = menu.build_launch(proj, control_home=home, arc_ref="my-session")
+    seed_arg = command[-1]
+    assert seed_arg.startswith("@")
+    seed_text = Path(seed_arg[1:]).read_text(encoding="utf-8")
+    assert "Active arc" in seed_text and "my-session" in seed_text
+
+
+def test_cli_menu_new_thread_creates_and_binds(home_with_project, monkeypatch, capsys):
+    home, proj = home_with_project
+    monkeypatch.chdir(home)
+    rc = cli.main(
+        ["menu", "--pick", "1", "--new-thread", "kickoff",
+         "--adapter", "tmux", "--debug", "--dry-run"]
+    )
+    assert rc == 0
+    # the thread now exists in the project, created by the picker
+    assert [t["slug"] for t in menu.list_threads(proj)] == ["kickoff"]
 
 
 def test_build_launch_is_scoped_lean_by_default(home_with_project):

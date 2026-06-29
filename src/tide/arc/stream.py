@@ -47,6 +47,13 @@ from . import templates
 
 TRIAD = ("input", "workspace", "output")
 
+# The three arc kinds. ``goal`` is detected by its ``*-goal.md`` passport; a
+# ``thread`` (нить — one session's memory) is a normal arc tagged ``kind: thread``
+# in its passport; everything else is a plain work ``arc``.
+KIND_ARC = "arc"
+KIND_GOAL = "goal"
+KIND_THREAD = "thread"
+
 
 class StreamError(Exception):
     """A user-facing arc-stream error (bad ref, closed goal, empty output …)."""
@@ -98,6 +105,45 @@ def passport_path(entry_dir: Path) -> Path:
     if goals:
         return goals[-1]
     return Path(entry_dir) / "arc.md"
+
+
+# --- entry kind (arc / goal / thread) --------------------------------------
+
+def entry_kind(entry_dir: Path) -> str:
+    """Classify an entry: ``goal`` (has a goal doc), ``thread`` (``kind: thread``
+    in its passport), else plain ``arc``.
+
+    Kind is read from the on-disk passport, so it is independent of the folder
+    name — threads share the arc folder shape and only differ by the field.
+    """
+    pp = passport_path(entry_dir)
+    if pp.name.endswith("-goal.md"):
+        return KIND_GOAL
+    k = (fields.read_field(pp, "kind") or "").strip().lower()
+    if k == KIND_THREAD:
+        return KIND_THREAD
+    return KIND_ARC
+
+
+def is_thread(entry_dir: Path) -> bool:
+    """True when *entry_dir* is a thread (session-memory) arc."""
+    return entry_kind(entry_dir) == KIND_THREAD
+
+
+def thread_entries(root: Path, *, closed: bool = False) -> List[Path]:
+    """Project threads in the top stream, open by default, in numeric order.
+
+    Pass ``closed=True`` to list sealed threads instead. Used by the picker to
+    offer threads (not all arcs) for continue/branch.
+    """
+    arcs = paths.arcs_dir(root)
+    out = [
+        p
+        for p in _entries(arcs)
+        if slug.is_closed_entry(p.name) == closed and is_thread(p)
+    ]
+    # NN prefixes are zero-padded, so a lexical name sort is numeric order.
+    return sorted(out, key=lambda p: p.name)
 
 
 # --- search-dir / goal-substream resolution --------------------------------
@@ -173,6 +219,28 @@ def new_arc(root: Path, raw_slug: str, goal_slug: Optional[str] = None) -> Path:
     for sub in TRIAD:
         (entry / sub).mkdir(parents=True, exist_ok=True)
     _io.atomic_write(entry / "arc.md", templates.arc_md(entry.name))
+    stamp_rev(entry, root)
+    return entry
+
+
+def new_thread(root: Path, raw_slug: str) -> Path:
+    """Create a thread ``NN-<slug>/`` (a session-memory arc, ``kind: thread``).
+
+    Like :func:`new_arc` but writes the thread passport and — deliberately — does
+    NOT run the between-arcs unmerged-delta barrier: a thread is a session, not a
+    work delta, so starting one is never gated by a closed work-arc's merge state.
+    Lives in the top stream (threads do not nest under goals). Stamps canon-rev.
+    """
+    s = slug.slugify(raw_slug)
+    if not s:
+        raise StreamError("new thread: empty slug after slugify")
+    stream_dir = paths.arcs_dir(root)
+    stream_dir.mkdir(parents=True, exist_ok=True)
+    nn = numbering.next_num(stream_dir)
+    entry = stream_dir / "{0}-{1}".format(nn, s)
+    for sub in TRIAD:
+        (entry / sub).mkdir(parents=True, exist_ok=True)
+    _io.atomic_write(entry / "arc.md", templates.thread_md(entry.name))
     stamp_rev(entry, root)
     return entry
 
@@ -538,6 +606,12 @@ def _cmd_new_goal(args) -> int:
     return 0
 
 
+def _cmd_new_thread(args) -> int:
+    entry = new_thread(_root(), args.slug)
+    print("tide: created thread {0}".format(entry))
+    return 0
+
+
 def _cmd_open(args) -> int:
     entry = open_arc(_root(), args.slug, goal_slug=args.goal)
     print("tide: opened {0} (canon-rev stamped)".format(entry))
@@ -596,6 +670,10 @@ def register(arc_subparsers) -> None:
     gp = arc_subparsers.add_parser("new-goal", help="create a goal NN-@<slug>/ with nested substream")
     gp.add_argument("slug")
     gp.set_defaults(func=_cmd_new_goal, _cmd="arc new-goal")
+
+    tp = arc_subparsers.add_parser("new-thread", help="create a thread NN-<slug>/ (kind: thread — one session's memory)")
+    tp.add_argument("slug")
+    tp.set_defaults(func=_cmd_new_thread, _cmd="arc new-thread")
 
     op = arc_subparsers.add_parser("open", help="select an open arc as active (stamps canon-rev)")
     op.add_argument("slug")

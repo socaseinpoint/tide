@@ -53,6 +53,7 @@ KNOWN_KEYS: FrozenSet[str] = frozenset(
         "deferred",
         "from",
         "goal",
+        "kind",         # arc kind marker — "thread" tags a session-memory arc
         "merged",
         "mode",
         "orca-base-branch",

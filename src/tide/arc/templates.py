@@ -37,6 +37,33 @@ def arc_md(name: str) -> str:
     ).format(name=name)
 
 
+def thread_md(name: str) -> str:
+    """Seed text for a thread's ``arc.md`` passport (a session-bound arc).
+
+    A *thread* (нить) is a third arc kind: the persistent memory home of ONE
+    orchestrator session. It is a normal arc on disk (``NN-<slug>/`` + ``arc.md``)
+    marked with ``kind: thread`` — so the picker can offer threads only, while
+    ``open``/``close``/``passport``/seed reuse the arc machinery unchanged.
+    Handoffs and context offloads land in ``## context`` over the thread's life.
+
+    *name* is the entry dir name (``NN-<slug>``) used as the H1 heading.
+    """
+    return (
+        "# {name}\n"
+        "\n"
+        "goal: <one line — what this session-thread is about>\n"
+        "status: active\n"
+        "kind: thread\n"
+        "# from: <slug of the thread this one branched / handed off from — optional>\n"
+        "\n"
+        "## context\n"
+        "<session memory — handoff distillations and context offloads land here>\n"
+        "\n"
+        "## where we are\n"
+        "<the live state of this thread>\n"
+    ).format(name=name)
+
+
 def goal_md(slug: str) -> str:
     """Seed text for a goal's immutable ``<slug>-goal.md`` doc.
 
