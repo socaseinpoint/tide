@@ -67,3 +67,41 @@ def test_cli_candidate_promote_unknown_key_errors(in_project, orchestrator_role,
     rc = cli.main(["candidate", "promote", "ghost"])
     assert rc == 1
     assert "no candidate matching" in capsys.readouterr().err
+
+
+def test_cli_candidate_add_into_another_rostered_project(tmp_control_home, tmp_path, monkeypatch):
+    # Cross-project capture: working in project A, drop a candidate into rostered B.
+    from tide import roster
+    from tide.init_home import scaffold_project
+
+    home = tmp_control_home
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    scaffold_project(a, name="a")
+    scaffold_project(b, name="b")
+    roster.add(home, "a", str(a))
+    roster.add(home, "b", str(b))
+    monkeypatch.setenv("TIDE_HOME", str(home))
+    monkeypatch.chdir(a)
+
+    rc = cli.main(["candidate", "add", "ship-it", "the", "idea", "--project", "b"])
+    assert rc == 0
+    landed = paths.candidates_dir(b) / "01-ship-it.md"
+    assert landed.is_file()  # in B …
+    assert not list(paths.candidates_dir(a).glob("*.md"))  # … NOT in A
+    assert "a" in (fields.read_field(landed, "from") or "")  # tagged with the origin
+
+
+def test_cli_candidate_add_unknown_project_errors(tmp_control_home, tmp_path, monkeypatch, capsys):
+    from tide.init_home import scaffold_project
+
+    a = tmp_path / "a"
+    a.mkdir()
+    scaffold_project(a, name="a")
+    monkeypatch.setenv("TIDE_HOME", str(tmp_control_home))
+    monkeypatch.chdir(a)
+    rc = cli.main(["candidate", "add", "x", "--project", "ghost"])
+    assert rc == 1
+    assert "no project named 'ghost'" in capsys.readouterr().err

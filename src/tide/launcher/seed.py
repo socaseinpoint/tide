@@ -209,6 +209,12 @@ def build_seed(
             "",
             "## Roster (control-home)",
             roster_text.strip() if roster_text.strip() else "(no projects)",
+            "",
+            "Notice work that belongs to a NEIGHBOUR project (above)? Don't lose it and "
+            "don't context-switch — drop it as a candidate there: "
+            "`tide candidate add <slug> \"<the idea>\" --project <roster-name>`. It lands "
+            "in that project's backlog (tagged with where it came from) for its "
+            "orchestrator to promote later. Capturing is cheap; promoting stays local.",
         ]
 
     lines += [

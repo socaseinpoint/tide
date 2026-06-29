@@ -221,10 +221,51 @@ def _root() -> Path:
     return paths.require_tide_root()
 
 
+def _resolve_target_root(project: str) -> Path:
+    """Resolve a sibling project's tide root by its roster name (cross-project capture).
+
+    Looks *project* up in the control-home roster (``$TIDE_HOME`` or the cwd climb),
+    so an agent working in one project can drop a candidate into ANY rostered
+    neighbour. Raises a user-facing error when the name is unknown or its directory
+    is not a tide project (so we never scaffold a stray ``.tide/`` somewhere).
+    """
+    from .. import roster  # lazy: avoid an import cycle at module load
+
+    home = paths.control_home()
+    for entry in roster.read_roster(home):
+        if entry.get("name") == project:
+            root = Path(entry["path"]).expanduser()
+            if not (root / ".tide").is_dir():
+                raise CandidateError(
+                    "candidate: project {0!r} ({1}) is not a tide project".format(project, root)
+                )
+            return root
+    raise CandidateError(
+        "candidate: no project named {0!r} in the roster ({1})".format(
+            project, paths.roster_file(home)
+        )
+    )
+
+
 def _cmd_add(args) -> int:
     body = " ".join(args.text) if args.text else None
-    path = new_candidate(_root(), args.slug, from_arc=args.from_arc, body=body)
-    print("tide: captured candidate {0}".format(path.name))
+    project = getattr(args, "project", None)
+    from_arc = args.from_arc
+    if project:
+        root = _resolve_target_root(project)
+        # Default from: to the ORIGIN project so the target can trace where the
+        # cross-project candidate came from (unless an explicit --from was given).
+        if not from_arc:
+            origin = paths.find_tide_root()
+            if origin is not None:
+                from_arc = "↗ {0}".format(origin.name)
+    else:
+        root = _root()
+    path = new_candidate(root, args.slug, from_arc=from_arc, body=body)
+    if project:
+        print("tide: captured candidate {0} → project {1}".format(path.name, project))
+    else:
+        print("tide: captured candidate {0}".format(path.name))
     return 0
 
 
@@ -251,6 +292,10 @@ def register(subparsers) -> None:
     ap = csub.add_parser("add", help="capture a candidate (own NN sequence)")
     ap.add_argument("slug")
     ap.add_argument("--from", dest="from_arc", help="origin arc slug (recorded as from:)")
+    ap.add_argument(
+        "--project",
+        help="capture into ANOTHER rostered project (by roster name), not the cwd one",
+    )
     ap.add_argument("text", nargs="*", help="free-form body (the surfaced idea)")
     ap.set_defaults(func=_cmd_add, _cmd="candidate add")
 
