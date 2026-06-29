@@ -103,6 +103,46 @@ def test_menu_banner_empty_when_nothing_offered(tmp_control_home):
     assert menu.render_pending_handoffs(tmp_control_home, []) == ""
 
 
+def test_navigate_interactive_handoff_pick(monkeypatch):
+    from tide.launcher import menu, select
+
+    monkeypatch.setattr(select, "select", lambda *a, **k: 0)  # pick first row = handoff
+    rec = {"slug": "stab", "project": "p", "mode": "continue"}
+    res = menu.navigate_interactive([{"name": "p", "path": "/p"}], handoffs=[rec])
+    assert res[0] == menu.HANDOFF_PICK and res[1] is rec
+
+
+def test_launch_handoff_seeds_and_marks_taken(tmp_control_home, tmp_path):
+    from tide.launcher import menu
+    from tide.adapters import SpawnResult
+    from tide.init_home import scaffold_project
+
+    proj = tmp_path / "tide-stack"
+    proj.mkdir()
+    scaffold_project(proj, name="tide-stack")
+    seed = tmp_path / "seed.md"
+    seed.write_text("# distil\n", encoding="utf-8")
+    hq.offer(tmp_control_home, "stab", arc="01-x", project="tide-stack", seed=str(seed))
+    rec = hq.list_offers(tmp_control_home)[0]
+    entries = [{"name": "tide-stack", "path": str(proj)}]
+
+    captured = {}
+
+    class FakeAdapter:
+        def spawn(self, *, command, cwd, title, dry_run):
+            captured["command"] = command
+            captured["cwd"] = cwd
+            return SpawnResult(ok=True, detail="spawned", commands=[command])
+
+    res = menu.launch_handoff(
+        rec, entries, control_home=tmp_control_home, adapter=FakeAdapter(), dry_run=False
+    )
+    assert res.ok
+    assert str(seed) in " ".join(captured["command"])   # session seeded from the distil
+    assert captured["cwd"] == str(proj)
+    assert hq.list_offers(tmp_control_home, status=hq.STATUS_TAKEN)  # offer flipped
+
+
 def test_install_hooks_wires_user_prompt_submit(tmp_project):
     from tide.hooks.install import install_hooks, HANDOFF_CONFIRM_CMD, USER_PROMPT_EVENT
     import json

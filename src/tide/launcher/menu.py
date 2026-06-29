@@ -573,26 +573,90 @@ def _navigate_type(project, project_name):
         return nav
 
 
-def navigate_interactive(entries):
+# Tag for a handoff-pickup result from navigate_interactive (vs a project entry).
+HANDOFF_PICK = "handoff"
+
+
+def _handoff_label(rec: Dict) -> str:
+    """The first-screen row for a pending handoff offer (distinct ⇄ prefix)."""
+    return "⇄ handoff · {0} → {1}  ({2})".format(rec["slug"], rec["project"], rec["mode"])
+
+
+def navigate_interactive(entries, handoffs=None):
     """Full project→type→(prism→session | routine→run) arrow flow with Back.
 
-    Returns (entry, bound) or None. After a project the human picks a TYPE — Task
-    (the existing prism→session flow) or Routine (routine→run) — with Back at every
-    step (type→project, prism/routine→type, session/run→prism/routine).
+    Pending *handoffs* (offered records) are surfaced as first-class rows at the TOP
+    of the first screen (``⇄ handoff · …``); picking one returns
+    ``(HANDOFF_PICK, record)`` for an immediate seed-based pickup — no prism/session
+    nav. Picking a project runs the normal TYPE → prism/session flow. Returns
+    ``(entry, bound)``, ``(HANDOFF_PICK, record)``, or None (cancel).
     """
+    handoffs = handoffs or []
     while True:
-        choice = select.select(
-            "Pick a project to lead this session:",
-            ["{0} → {1}".format(e["name"], e["path"]) for e in entries],
-            allow_new=False, allow_back=True,
+        labels = [_handoff_label(h) for h in handoffs] + [
+            "{0} → {1}".format(e["name"], e["path"]) for e in entries
+        ]
+        title = (
+            "Resume a handoff, or pick a project to lead this session:"
+            if handoffs else "Pick a project to lead this session:"
         )
+        choice = select.select(title, labels, allow_new=False, allow_back=True)
         if choice == select.BACK:
-            return None  # back out of the project step = cancel
-        entry = entries[choice]
+            return None  # back out of the first step = cancel
+        if choice < len(handoffs):
+            return (HANDOFF_PICK, handoffs[choice])
+        entry = entries[choice - len(handoffs)]
         nav = _navigate_type(Path(entry["path"]).expanduser(), entry["name"])
         if nav == select.BACK:
-            continue  # back to the project picker
+            continue  # back to the first picker
         return entry, nav
+
+
+def launch_handoff(
+    record: Dict,
+    entries: List[Dict[str, str]],
+    *,
+    control_home: Path,
+    adapter,
+    role: str = DEFAULT_ROLE,
+    skip_permissions: bool = True,
+    dry_run: bool = False,
+) -> SpawnResult:
+    """Pick up a handoff: launch its owning project's session seeded from the distil.
+
+    Resolves the offer's project to its roster path, opens a fresh session there
+    seeded by the handoff seed file (``--append-system-prompt`` so it starts already
+    oriented), pins a session id, and — on a real (non-dry) launch — marks the offer
+    ``taken`` (stamping the pinned id). The pickup is recorded at launch, not left to
+    the confirm hook, since selecting it in the menu IS the confirmation.
+    """
+    proj_entry = next((e for e in entries if e["name"] == record["project"]), None)
+    if proj_entry is None:
+        return SpawnResult(
+            ok=False,
+            detail="handoff: project {0!r} not in roster".format(record["project"]),
+            commands=[],
+        )
+    project = Path(proj_entry["path"]).expanduser()
+    seed_path = record.get("seed")
+    if not seed_path or seed_path == "-" or not Path(seed_path).is_file():
+        return SpawnResult(
+            ok=False, detail="handoff: seed file missing ({0})".format(seed_path), commands=[]
+        )
+    session_id = str(uuid.uuid4())
+    command = build_launch(
+        project, control_home=control_home, role=role,
+        seed_file=seed_path, session_id=session_id,
+        skip_permissions=skip_permissions, dry_run=dry_run,
+    )
+    res = adapter.spawn(
+        command=command, cwd=str(project),
+        title="handoff · {0}".format(record["slug"]), dry_run=dry_run,
+    )
+    if not dry_run and res.ok:
+        from .. import handoff_queue  # lazy: avoid import cycle
+        handoff_queue.take(control_home, record["name"], session=session_id)
+    return res
 
 
 # --- launch ----------------------------------------------------------------
@@ -610,6 +674,7 @@ def build_launch(
     resume: bool = False,
     skip_permissions: bool = True,
     dry_run: bool = False,
+    seed_file: Optional[str] = None,
 ) -> List[str]:
     """Resolve the scoped ``claude …`` argv for *project*.
 
@@ -636,6 +701,7 @@ def build_launch(
         session_id=session_id,
         skip_permissions=skip_permissions,
         dry_run=dry_run,
+        seed_file=seed_file,
     )
     if resume and session_id:
         resume_cmd = [context.SESSION_PROGRAM]
@@ -663,21 +729,30 @@ def _fresh_command(
     session_id: Optional[str],
     skip_permissions: bool,
     dry_run: bool,
+    seed_file: Optional[str] = None,
 ) -> List[str]:
-    """The seeded fresh-launch argv (with ``--session-id`` pinned when given)."""
-    s = seed.seed_for_project(
-        project,
-        role=role,
-        control_home=control_home,
-        arc_ref=arc_ref,
-        arc_text=arc_text,
-        prism_name=prism_name,
-        container_kind=container_kind,
-    )
-    title = "tide-{0}".format(project.name)
-    seed_file = DRY_RUN_SEED_FILE if dry_run else str(persist_seed(s, title))
+    """The seeded fresh-launch argv (with ``--session-id`` pinned when given).
+
+    *seed_file*, when given, is used VERBATIM as the seed (the handoff-pickup path:
+    the session opens oriented by the handoff distil); otherwise a fresh per-project
+    seed is generated and persisted.
+    """
+    if seed_file:
+        sf = seed_file
+    else:
+        s = seed.seed_for_project(
+            project,
+            role=role,
+            control_home=control_home,
+            arc_ref=arc_ref,
+            arc_text=arc_text,
+            prism_name=prism_name,
+            container_kind=container_kind,
+        )
+        title = "tide-{0}".format(project.name)
+        sf = DRY_RUN_SEED_FILE if dry_run else str(persist_seed(s, title))
     profile = context.load_profile(project)
-    command = context.build_launch_command(seed_file, profile)
+    command = context.build_launch_command(sf, profile)
     if session_id:
         command[1:1] = ["--session-id", session_id]  # pin for a future --resume
     if skip_permissions and SKIP_PERMISSIONS not in command:
@@ -835,13 +910,12 @@ def cmd_menu(args) -> int:
     include_archived = bool(getattr(args, "all", False))
     entries = all_entries if include_archived else active_entries(all_entries)
 
-    # Surface any hanging handoff offers up top (two-stage handoff pull model).
-    banner = render_pending_handoffs(root, all_entries)
-    if banner:
-        print(banner)
-        print()
+    # Pending handoffs (two-stage pull model): surfaced as pickable rows in the TTY
+    # picker, or as a printed banner on the non-tty path (below).
+    from .. import handoff_queue  # lazy: avoid import cycle at module load
+    pending = handoff_queue.list_offers(root, status=handoff_queue.STATUS_OFFERED)
 
-    if not entries:
+    if not entries and not pending:
         if not all_entries:
             print(render_menu([]))  # truly empty roster
         else:
@@ -857,17 +931,31 @@ def cmd_menu(args) -> int:
     interactive = not raw
 
     if interactive and select.is_interactive_tty():
-        # TTY: arrow-navigate project → prism → session, with ←/Esc Back between
-        # the steps. Back out of the project step cancels the whole launch.
-        nav = navigate_interactive(entries)
+        # TTY: pending handoffs sit at the TOP of the first picker; below them the
+        # normal project → type → prism/session flow, with ←/Esc Back between steps.
+        nav = navigate_interactive(entries, handoffs=pending)
         if nav is None:
             print("tide: cancelled")
             return 0
+        if nav[0] == HANDOFF_PICK:
+            # Picked a handoff → seed-based pickup of its owning project, mark taken.
+            res = launch_handoff(
+                nav[1], all_entries, control_home=root,
+                adapter=get_adapter(adapter_name), role=role,
+                skip_permissions=skip_permissions, dry_run=dry_run,
+            )
+            flag = "ok" if res.ok else "FAILED"
+            print("tide: handoff {0} [{1}] {2}".format(nav[1]["slug"], flag, res.detail))
+            return 0 if res.ok else 1
         entry, bound = nav
         chosen = [{**entry, "session": bound}]
     else:
         if not raw:
-            # non-TTY: keep the typed multi-pick ('1,3' / 'all') behavior intact.
+            # non-TTY: surface pending handoffs as a banner, then the typed multi-pick.
+            hb = render_pending_handoffs(root, all_entries)
+            if hb:
+                print(hb)
+                print()
             print(render_menu(entries))
             try:
                 raw = input("pick> ")
