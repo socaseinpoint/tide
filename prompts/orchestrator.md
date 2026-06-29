@@ -17,11 +17,12 @@ The session's arc gets written **only** when the human triggers one of:
   refresh `## cursor`. Incremental; nothing new → say so and write nothing.
 - **handoff** — offload, then carry this work-line forward into a FRESH session in the SAME prism
   (opens an Orca terminal); writes the session's title + summary (done / undone / heading).
-- **branch** — offload, then start a NEW prism (a new work-line) from an idea that surfaced here.
+- **spark** — offload, then start a NEW prism (a new work-line) from an idea that surfaced here —
+  for a tangent you don't want to continue in this prism.
 
 Outside those, leave the stream alone.
 
 ## Where you are
 Resume from the bound session's **`## cursor`**. When the human triggers offload / handoff /
-branch, update `## cursor` + `## context` (and on handoff, the `title:` + `## summary`) so the
+spark, update `## cursor` + `## context` (and on handoff, the `title:` + `## summary`) so the
 next session picks up cleanly. That's it.

@@ -1,7 +1,7 @@
-# Session operations — offload / handoff / branch(?)
+# Session operations — offload / handoff / spark
 
-> Naming: the dump op is **offload** (not "флот"). "branch" is a placeholder name —
-> see the branch section; a better word is wanted.
+> Naming: the dump op is **offload** (not "флот"); the new-work-line op is **spark**
+> (was "branch" — an idea sparks a new prism).
 
 The three human-triggered operations on a **session** (one run inside a prism).
 Outside these, the agent leaves the stream alone (minimal mode). Captured from the
@@ -16,7 +16,7 @@ design conversation; OPEN questions marked ⛏.
 - Dump the session's **current** work into its arc: append to `## context`, refresh `## cursor`.
 - **Incremental** — only what's new since the last offload. Nothing new → writes nothing and
   says so.
-- It's the intermediate step that **handoff and branch both run first**.
+- It's the intermediate step that **handoff and spark both run first**.
 - **Marker — DECIDED: deterministic (B).** The session passport carries `offloaded-at: <N>` where
   `N` is the session's **transcript size** (message/line count of the live Claude session) at the
   last offload. On offload: read current size, distill the slice `[offloaded-at .. now]`, append it
@@ -31,12 +31,11 @@ design conversation; OPEN questions marked ⛏.
 - Writes the session `title:` + `## summary`: **what was done · what's left undone · where it's
   heading** (longer if the session is large). The new session is seeded with that.
 
-## branch = start a NEW prism from an idea that surfaced here
+## spark = start a NEW prism from an idea that surfaced here
 - Use when a tangential idea pops up that you do NOT want to continue in this work-line — spin it
   into its **own new prism** (a new нить), quickly, and jump there.
 - offload first, then create a NEW **prism** (+ its first session) recording where it came from.
-- ⛏ **Name "branch" is a placeholder** — wanted: a word for "surfaced idea → new work-line".
-  Candidates: **spark** · spinoff · sprout · offshoot · tangent. (light-through-a-prism theme.)
+- Name: **spark** (an idea sparks a new prism; light-through-a-prism theme).
 
 ## picker sub-choice (on continuing an existing session)
 - When you pick an existing session in `tide menu`, it asks:
@@ -63,7 +62,8 @@ When continuing an existing session the picker asks: **same context** or **hando
 from the arc/cursor? Different mechanisms — needs a decision before the sub-choice is built.
 
 ## Build sketch (once OPEN questions close)
-- CLI primitive: `tide session offload <prism> <session> [text]` — dumb appender (incrementality
-  lives in the skill, variant A). `tide arc new-session --from <ref>` already sets `from:`.
-- Skills: `/offload`, `/branch` (and wire `/handoff` to write into the prism session + set `from:`).
+- CLI primitive: `tide session offload <prism> <session> --at <N> [text]` — appends text under
+  `## context` + stores `offloaded-at: N` (marker B). The skill measures `N` (transcript size) and
+  distills the slice. `tide arc new-session --from <ref>` already sets `from:` (shipped).
+- Skills: `/offload`, `/spark` (and wire `/handoff` to write the prism session + set `from:`).
 - Minimal: no contracts, no canon, no auto-actions.
