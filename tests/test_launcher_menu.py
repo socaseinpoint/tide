@@ -251,6 +251,28 @@ def test_continue_session_with_id_resumes_same_conversation(home_with_project):
     assert "--session-id abc-123" in shell  # the fallback re-pins the same id
 
 
+def test_navigate_back_from_prism_returns_to_project(home_with_project, monkeypatch):
+    home, proj = home_with_project
+    from tide.arc import stream
+    from tide.launcher import select as sel
+    stream.new_prism(proj, "prz")
+    stream.new_session(proj, "prz", "one")
+    # project=0, prism=BACK (→ back to project), project=0, prism=0, session=0
+    seq = iter([0, sel.BACK, 0, 0, 0])
+    monkeypatch.setattr(menu.select, "select", lambda *a, **k: next(seq))
+    entry, bound = menu.navigate_interactive([{"name": "proj", "path": str(proj)}])
+    assert entry["name"] == "proj"
+    assert bound["prism"] == "prz"
+    assert bound["arc_ref"] == "one"
+
+
+def test_navigate_back_from_project_cancels(home_with_project, monkeypatch):
+    _, proj = home_with_project
+    from tide.launcher import select as sel
+    monkeypatch.setattr(menu.select, "select", lambda *a, **k: sel.BACK)
+    assert menu.navigate_interactive([{"name": "proj", "path": str(proj)}]) is None
+
+
 def test_build_launch_binds_session_into_seed(home_with_project):
     home, proj = home_with_project
     from tide.arc import stream

@@ -25,10 +25,16 @@ from ..arc.stream import StreamError
 # distinct value so the caller never confuses it with a real 0-based index).
 NEW = "new"
 
+# Sentinel returned when the human goes back to the previous screen (← / Esc / h).
+BACK = "back"
+
 # Keys the fallback parse treats as "+ new" (same set as menu.parse_pick).
 _NEW_TOKENS = ("", "0", "n", "new", "+")
+# Keys the fallback parse treats as "go back" (when allow_back).
+_BACK_TOKENS = ("b", "back", "<", "-")
 
 _HINT = "↑/↓ move · Enter select · q cancel"
+_HINT_BACK = "↑/↓ move · Enter select · ←/Esc back"
 
 
 class SelectError(StreamError):
@@ -50,30 +56,34 @@ def select(
     *,
     allow_new: bool = True,
     new_label: str = "+ new",
+    allow_back: bool = False,
 ) -> Union[int, str]:
-    """Pick one of *options*; return its 0-based index, or :data:`NEW` for "+ new".
+    """Pick one of *options*; return its 0-based index, :data:`NEW` for "+ new", or
+    :data:`BACK` for "go to the previous screen" (when *allow_back*).
 
     On a real terminal this is an interactive curses menu (arrows/k/j move, Enter
-    selects, q/Esc cancels — cancel defaults to :data:`NEW` when *allow_new* else
-    index ``0``). Otherwise it prints a numbered list and reads one line, mapping
-    ``0``/empty/``new`` → :data:`NEW` (when *allow_new*) and ``1..len`` → index,
-    raising :class:`SelectError` on anything else.
+    selects; ←/Esc/h → :data:`BACK` when *allow_back*, else q/Esc cancels to
+    :data:`NEW`/index ``0``). Otherwise it prints a numbered list and reads one
+    line, mapping ``0``/empty/``new`` → :data:`NEW`, ``b``/``<`` → :data:`BACK`
+    (when allowed), ``1..len`` → index, raising :class:`SelectError` otherwise.
     """
     if is_interactive_tty() and (options or allow_new):
-        return _run_curses(title, list(options), allow_new, new_label)
-    return _fallback(title, list(options), allow_new, new_label)
+        return _run_curses(title, list(options), allow_new, new_label, allow_back)
+    return _fallback(title, list(options), allow_new, new_label, allow_back)
 
 
 # --- non-tty fallback ------------------------------------------------------
 
-def _fallback(title, options, allow_new, new_label):
+def _fallback(title, options, allow_new, new_label, allow_back=False):
     """Print a numbered list and read one line (the scripted / piped path)."""
     print(title)
     if allow_new:
         print("  0) {0}".format(new_label))
     for i, opt in enumerate(options, start=1):
         print("  {0}) {1}".format(i, opt))
-    return _parse_pick(_input_line("select> "), len(options), allow_new)
+    if allow_back:
+        print("  (b = back)")
+    return _parse_pick(_input_line("select> "), len(options), allow_new, allow_back)
 
 
 def _input_line(prompt):
@@ -84,9 +94,11 @@ def _input_line(prompt):
         return ""
 
 
-def _parse_pick(raw, count, allow_new):
-    """Map a typed pick to :data:`NEW` or a 0-based index, validated to *count*."""
+def _parse_pick(raw, count, allow_new, allow_back=False):
+    """Map a typed pick to :data:`NEW`/:data:`BACK` or a 0-based index."""
     s = (raw or "").strip().lower()
+    if allow_back and s in _BACK_TOKENS:
+        return BACK
     if allow_new and s in _NEW_TOKENS:
         return NEW
     if not s.isdigit():
@@ -114,8 +126,8 @@ def _build_rows(options, allow_new, new_label):
     return rows, start
 
 
-def _run_curses(title, options, allow_new, new_label):
-    """Drive the arrow-key menu under curses.wrapper; return index or :data:`NEW`."""
+def _run_curses(title, options, allow_new, new_label, allow_back=False):
+    """Drive the arrow-key menu under curses.wrapper; return index / :data:`NEW` / :data:`BACK`."""
     import curses  # lazy: importing the module never starts the terminal
 
     rows, start = _build_rows(options, allow_new, new_label)
@@ -124,7 +136,7 @@ def _run_curses(title, options, allow_new, new_label):
         curses.curs_set(0)
         cur = start
         while True:
-            _draw(curses, stdscr, title, rows, cur)
+            _draw(curses, stdscr, title, rows, cur, allow_back)
             ch = stdscr.getch()
             if ch in (curses.KEY_UP, ord("k")):
                 cur = (cur - 1) % len(rows)
@@ -133,13 +145,15 @@ def _run_curses(title, options, allow_new, new_label):
             elif ch in (curses.KEY_ENTER, ord("\n"), ord("\r")):
                 kind, _, idx = rows[cur]
                 return NEW if kind == "new" else idx
-            elif ch in (ord("q"), 27):  # q or Esc
-                return NEW if allow_new else 0
+            elif allow_back and ch in (curses.KEY_LEFT, ord("h"), 27):  # ←/h/Esc → back
+                return BACK
+            elif ch in (ord("q"), 27):  # q or Esc → cancel
+                return BACK if allow_back else (NEW if allow_new else 0)
 
     return curses.wrapper(_main)
 
 
-def _draw(curses, stdscr, title, rows, cur):
+def _draw(curses, stdscr, title, rows, cur, allow_back=False):
     """Paint the title, the option rows (highlight inverted), and the hint line."""
     stdscr.erase()
     height, width = stdscr.getmaxyx()
@@ -154,5 +168,6 @@ def _draw(curses, stdscr, title, rows, cur):
         attr = curses.A_REVERSE if i == cur else curses.A_NORMAL
         stdscr.addnstr(y, 0, text[:cap], cap, attr)
     if height >= 2:
-        stdscr.addnstr(height - 1, 0, _HINT[:cap], cap, curses.A_DIM)
+        hint = _HINT_BACK if allow_back else _HINT
+        stdscr.addnstr(height - 1, 0, hint[:cap], cap, curses.A_DIM)
     stdscr.refresh()

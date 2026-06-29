@@ -343,22 +343,106 @@ def resolve_session(
     )
     if sess_slug is None:
         return None
+    return _session_binding(sess_slug, sess_path, is_new, prism)
+
+
+def _session_binding(sess_slug, sess_path, is_new, prism) -> Dict[str, Optional[str]]:
+    """Build the bound-session dict (passport, claude session-id/resume, label bits)."""
     arc_text = None
     session_id = None
     resume = False
+    session_index = ""
+    session_title = ""
     if sess_path:
         try:
             arc_text = (Path(sess_path) / "arc.md").read_text(encoding="utf-8")
         except OSError:
             arc_text = None
         session_id, resume = _bind_claude_session(sess_path, is_new=is_new)
+        session_index = Path(sess_path).name.split("-", 1)[0]
+        t = (fields.read_field(Path(sess_path) / "arc.md", "title") or "").strip()
+        session_title = "" if t.startswith("<") else t
     return {
         "arc_ref": sess_slug,
         "arc_text": arc_text,
         "prism": prism,
         "session_id": session_id,
         "resume": resume,
+        "session_index": session_index,
+        "session_title": session_title,
     }
+
+
+# --- interactive navigation (project → prism → session, with Back) ---------
+
+def _pick_prism_interactive(project, project_name):
+    """Arrow-pick a prism: return its slug, create on NEW, or :data:`select.BACK`."""
+    prisms = list_prisms(project)
+    choice = select.select(
+        "Prism (призма) for {0} — continue one, or start new:".format(project_name),
+        [_prism_label(p) for p in prisms],
+        allow_new=True, new_label="+ new prism", allow_back=True,
+    )
+    if choice == select.BACK:
+        return select.BACK
+    if choice == select.NEW:
+        return _create_prism(project, _ask("new prism name> "))
+    return prisms[choice]["slug"]
+
+
+def _pick_session_interactive(project, prism_slug):
+    """Arrow-pick a session: return (slug, path, is_new), or :data:`select.BACK`."""
+    sessions = list_sessions(project, prism_slug)
+    choice = select.select(
+        "Session in prism {0} — continue one, or start new:".format(prism_slug),
+        [_session_label(s) for s in sessions],
+        allow_new=True, new_label="+ new session", allow_back=True,
+    )
+    if choice == select.BACK:
+        return select.BACK
+    if choice == select.NEW:
+        slug_, path_ = _create_session(project, prism_slug, "")
+        return slug_, path_, True
+    chosen = sessions[choice]
+    return chosen["slug"], chosen["path"], False
+
+
+def _navigate_session(project, project_name):
+    """Interactive prism→session with Back between the steps.
+
+    Returns the bound-session dict, or :data:`select.BACK` to go back to the
+    project picker.
+    """
+    while True:
+        prism = _pick_prism_interactive(project, project_name)
+        if prism == select.BACK:
+            return select.BACK
+        if not prism:  # blank new-prism name → re-show the prism step
+            continue
+        sess = _pick_session_interactive(project, prism)
+        if sess == select.BACK:
+            continue  # back to the prism step
+        sess_slug, sess_path, is_new = sess
+        if sess_slug is None:
+            continue
+        return _session_binding(sess_slug, sess_path, is_new, prism)
+
+
+def navigate_interactive(entries):
+    """Full project→prism→session arrow flow with Back. Returns (entry, bound) or None."""
+    while True:
+        choice = select.select(
+            "Pick a project to lead this session:",
+            ["{0} → {1}".format(e["name"], e["path"]) for e in entries],
+            allow_new=False, allow_back=True,
+        )
+        if choice == select.BACK:
+            return None  # back out of the project step = cancel
+        entry = entries[choice]
+        nav = _navigate_session(Path(entry["path"]).expanduser(), entry["name"])
+        if nav == select.BACK:
+            continue  # back to the project picker
+        return entry, nav
 
 
 # --- launch ----------------------------------------------------------------
@@ -479,10 +563,22 @@ def launch_entry(
         dry_run=dry_run,
         **_session_launch_kwargs(entry),
     )
-    title = "tide-{0}".format(entry["name"])
     return adapter.spawn(
-        command=command, cwd=str(project), title=title, dry_run=dry_run
+        command=command, cwd=str(project), title=_tab_title(entry), dry_run=dry_run
     )
+
+
+def _tab_title(entry: Dict) -> str:
+    """The terminal tab title — session first, then prism: ``<session> · <prism>``.
+
+    Falls back to ``tide-<project>`` when no session is bound.
+    """
+    s = entry.get("session") or {}
+    prism = s.get("prism")
+    if not prism:
+        return "tide-{0}".format(entry["name"])
+    session = s.get("session_title") or s.get("session_index") or s.get("arc_ref") or "session"
+    return "{0} · {1}".format(session, prism)
 
 
 def launch_entries(
@@ -582,48 +678,44 @@ def cmd_menu(args) -> int:
         return 0
 
     raw = getattr(args, "pick", None)
-    if not raw:
-        if select.is_interactive_tty():
-            # TTY: navigate the roster with arrows (single pick). The downstream
-            # parse_selection still drives off a pick string, so map the chosen
-            # 0-based index back to its 1-based row (no "+ new" for projects).
-            idx = select.select(
-                "Pick a project to lead this session:",
-                ["{0} → {1}".format(e["name"], e["path"]) for e in entries],
-                allow_new=False,
-            )
-            raw = str(int(idx) + 1)
-        else:
+    adapter_name = resolve_adapter_name(root, getattr(args, "adapter", None))
+    dry_run = bool(getattr(args, "dry_run", False))
+    debug = bool(getattr(args, "debug", False))
+    skip_permissions = not getattr(args, "no_skip_permissions", False)
+    role = getattr(args, "role", None) or DEFAULT_ROLE
+    interactive = not raw
+
+    if interactive and select.is_interactive_tty():
+        # TTY: arrow-navigate project → prism → session, with ←/Esc Back between
+        # the steps. Back out of the project step cancels the whole launch.
+        nav = navigate_interactive(entries)
+        if nav is None:
+            print("tide: cancelled")
+            return 0
+        entry, bound = nav
+        chosen = [{**entry, "session": bound}]
+    else:
+        if not raw:
             # non-TTY: keep the typed multi-pick ('1,3' / 'all') behavior intact.
             print(render_menu(entries))
             try:
                 raw = input("pick> ")
             except EOFError:
                 raw = ""
-
-    chosen = select_entries(entries, raw)
-    adapter_name = resolve_adapter_name(root, getattr(args, "adapter", None))
-    dry_run = bool(getattr(args, "dry_run", False))
-    debug = bool(getattr(args, "debug", False))
-    skip_permissions = not getattr(args, "no_skip_permissions", False)
-    role = getattr(args, "role", None) or DEFAULT_ROLE
-
-    # Bind a session to each chosen project: pick a prism (призма), then a session
-    # inside it (continue or 0=new). Flags win; else prompt when the project pick
-    # itself was interactive; else no binding (back-compat with scripted --pick).
-    interactive = not getattr(args, "pick", None)
-    chosen = [
-        {**entry, "session": resolve_session(
-            Path(entry["path"]).expanduser(),
-            entry["name"],
-            prism_ref=getattr(args, "prism", None),
-            new_prism=getattr(args, "new_prism", None),
-            session_ref=getattr(args, "session", None),
-            new_session=getattr(args, "new_session", None),
-            interactive=interactive,
-        )}
-        for entry in chosen
-    ]
+        chosen = select_entries(entries, raw)
+        # Bind a session per chosen project from flags (or non-tty interactive prompts).
+        chosen = [
+            {**entry, "session": resolve_session(
+                Path(entry["path"]).expanduser(),
+                entry["name"],
+                prism_ref=getattr(args, "prism", None),
+                new_prism=getattr(args, "new_prism", None),
+                session_ref=getattr(args, "session", None),
+                new_session=getattr(args, "new_session", None),
+                interactive=interactive,
+            )}
+            for entry in chosen
+        ]
 
     # --debug (real launch) and --dry-run (no launch) both show the human EXACTLY
     # what scoped session will run — the resolved claude argv (strict MCP scoping
