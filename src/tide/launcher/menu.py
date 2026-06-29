@@ -624,11 +624,16 @@ def launch_handoff(
 ) -> SpawnResult:
     """Pick up a handoff: launch its owning project's session seeded from the distil.
 
-    Resolves the offer's project to its roster path, opens a fresh session there
+    Resolves the offer's project to its roster path and opens a fresh session there
     seeded by the handoff seed file (``--append-system-prompt`` so it starts already
-    oriented), pins a session id, and — on a real (non-dry) launch — marks the offer
-    ``taken`` (stamping the pinned id). The pickup is recorded at launch, not left to
-    the confirm hook, since selecting it in the menu IS the confirmation.
+    oriented), with a pinned session id.
+
+    It deliberately does NOT mark the offer taken here. "Spawn returned ok" only means
+    the launch command was issued — not that a session really opened and a human
+    engaged. The offer flips to ``taken`` only on the REAL confirmation: the first
+    human message in the picked-up session (the UserPromptSubmit ``handoff-confirm``
+    hook claims it by project). So a launch that errors or never opens leaves the
+    offer hanging, recoverable — exactly the two-stage guarantee.
     """
     proj_entry = next((e for e in entries if e["name"] == record["project"]), None)
     if proj_entry is None:
@@ -649,14 +654,13 @@ def launch_handoff(
         seed_file=seed_path, session_id=session_id,
         skip_permissions=skip_permissions, dry_run=dry_run,
     )
-    res = adapter.spawn(
+    # NB: no handoff_queue.take() here — the offer stays OFFERED until the picked-up
+    # session's first message confirms it (handoff-confirm hook). Issuing the spawn
+    # is not proof the session opened.
+    return adapter.spawn(
         command=command, cwd=str(project),
         title="handoff · {0}".format(record["slug"]), dry_run=dry_run,
     )
-    if not dry_run and res.ok:
-        from .. import handoff_queue  # lazy: avoid import cycle
-        handoff_queue.take(control_home, record["name"], session=session_id)
-    return res
 
 
 # --- launch ----------------------------------------------------------------

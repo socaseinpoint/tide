@@ -112,7 +112,7 @@ def test_navigate_interactive_handoff_pick(monkeypatch):
     assert res[0] == menu.HANDOFF_PICK and res[1] is rec
 
 
-def test_launch_handoff_seeds_and_marks_taken(tmp_control_home, tmp_path):
+def test_launch_handoff_seeds_but_stays_offered_until_confirmed(tmp_control_home, tmp_path):
     from tide.launcher import menu
     from tide.adapters import SpawnResult
     from tide.init_home import scaffold_project
@@ -140,7 +140,10 @@ def test_launch_handoff_seeds_and_marks_taken(tmp_control_home, tmp_path):
     assert res.ok
     assert str(seed) in " ".join(captured["command"])   # session seeded from the distil
     assert captured["cwd"] == str(proj)
-    assert hq.list_offers(tmp_control_home, status=hq.STATUS_TAKEN)  # offer flipped
+    # CRITICAL: launching does NOT consume the offer — it stays OFFERED until the
+    # picked-up session's first message confirms it (the confirm hook).
+    assert hq.list_offers(tmp_control_home, status=hq.STATUS_OFFERED)
+    assert not hq.list_offers(tmp_control_home, status=hq.STATUS_TAKEN)
 
 
 def test_install_hooks_wires_user_prompt_submit(tmp_project):
