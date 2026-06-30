@@ -461,61 +461,175 @@ def _session_binding(sess_slug, sess_path, is_new, thread, *, kind=stream.KIND_T
 
 # --- interactive navigation (project → thread → session, with Back) ---------
 
-def _pick_thread_interactive(project, project_name):
-    """Arrow-pick a thread: return its slug, create on NEW, or :data:`select.BACK`."""
+# A pending handoff surfaces INSIDE its thread (not on the root screen): the offer's
+# seeded session is the thread's tip (marked ⇄), and its thread is marked ⊕. The
+# offer→(thread, session) map is derived from the seed PATH —
+# ``<arcs>/<thread>/arcs/<session>/input/<seed>.md`` — not the free-form ``arc:``
+# field, so it holds regardless of what --arc the offerer passed.
+OFFER_THREAD_MARK = "⊕ "   # a thread that carries a pending handoff
+OFFER_SESSION_MARK = "⇄ "  # the offered (pick-me-up) session inside a thread
+
+
+def _offer_session_dir(rec: Dict) -> Optional[Path]:
+    """The session dir an offer targets, derived from its seed path (or None)."""
+    seed = rec.get("seed")
+    if not seed or seed == "-":
+        return None
+    sd = Path(str(seed)).expanduser().parent.parent  # <session>/input/<seed> → <session>
+    return sd if sd.is_dir() else None
+
+
+def project_offers(handoffs: List[Dict], project: Path) -> List[Dict]:
+    """Offers whose seeded session lives under *project*, annotated with thread/session.
+
+    Returns ``[{"record", "thread", "session"}, …]`` — the thread/session entry
+    slugs derived from the seed path. Only records with a resolvable session in
+    this project's stream are included (others belong to a different project or are
+    seed-less). Lets the picker float/mark the offer inside its own thread.
+    """
+    arcs = paths.arcs_dir(project).resolve()
+    out: List[Dict] = []
+    for rec in handoffs or []:
+        sd = _offer_session_dir(rec)
+        if sd is None:
+            continue
+        sd = sd.resolve()
+        if sd.parent.name != paths.ARCS_DIRNAME:
+            continue
+        thread_dir = sd.parent.parent
+        if thread_dir.parent != arcs:
+            continue
+        out.append({
+            "record": rec,
+            "thread": slug.entry_slug(thread_dir.name),
+            "session": slug.entry_slug(sd.name),
+        })
+    return out
+
+
+def _pick_thread_interactive(project, project_name, offer_threads=frozenset()):
+    """Arrow-pick a thread: return its slug, create on NEW, or :data:`select.BACK`.
+
+    Threads carrying a pending handoff (slug in *offer_threads*) are marked ``⊕`` and
+    floated to the top, so a thread you can resume-from-handoff is the first thing
+    you see (after ``+ new thread``).
+    """
     threads = list_threads(project)
+    flagged = [t for t in threads if t["slug"] in offer_threads]
+    rest = [t for t in threads if t["slug"] not in offer_threads]
+    ordered = flagged + rest
+    labels = [
+        (OFFER_THREAD_MARK if t["slug"] in offer_threads else "") + _thread_label(t)
+        for t in ordered
+    ]
     choice = select.select(
         "Thread (тред) for {0} — continue one, or start new:".format(project_name),
-        [_thread_label(p) for p in threads],
+        labels,
         allow_new=True, new_label="+ new thread", allow_back=True,
     )
     if choice == select.BACK:
         return select.BACK
     if choice == select.NEW:
         return _create_thread(project, _ask("new thread name> "))
-    return threads[choice]["slug"]
+    return ordered[choice]["slug"]
 
 
-def _pick_session_interactive(project, thread_slug):
-    """Pick a session to resume, or — for an EMPTY thread — auto-create its first.
-
-    Thread law: a thread's sessions are a narrative connected by handoffs (real
-    context transfer), so there is no blank "+ new session" mid-thread. An empty
-    thread auto-gets its first session (begins the narrative); a thread that
-    already has sessions offers **resume-only** — the next session is born from a
-    handoff, not here. Returns (slug, path, is_new), or :data:`select.BACK`.
-    """
-    sessions = list_sessions(project, thread_slug)
-    if not sessions:
-        # First session is born with the thread — begins the narrative.
-        slug_, path_ = _create_session(project, thread_slug, "")
-        return slug_, path_, True
+def _offered_action(rec: Dict) -> str:
+    """Sub-choice for a picked offered session: ``'pickup'`` | ``'dismiss'`` | ``'back'``."""
     choice = select.select(
-        "Session in thread {0} — resume one (new sessions come from handoffs):".format(thread_slug),
-        [_session_label(s) for s in sessions],
+        "Handoff {0} — pick it up, or dismiss it?".format(rec["slug"]),
+        ["Pick up (resume from the handoff)", "Dismiss (drop the offer)"],
         allow_new=False, allow_back=True,
     )
     if choice == select.BACK:
-        return select.BACK
-    chosen = sessions[choice]
-    return chosen["slug"], chosen["path"], False
+        return "back"
+    return "pickup" if choice == 0 else "dismiss"
 
 
-def _navigate_session(project, project_name):
+def _pick_session_interactive(
+    project, thread_slug, offers=None, *,
+    allow_new=False, new_label="+ new session", item="Session", container="thread",
+):
+    """Pick a session/run to resume / pick up a handoff, or auto-create the first.
+
+    Two callers, two laws:
+
+    * **threads** (default, *allow_new* False) — the thread law: sessions are a
+      narrative connected by handoffs, so there is no blank "+ new session"
+      mid-thread. An EMPTY thread auto-gets its first session; one with sessions is
+      **resume-only**. *offers* float their session to the top marked ⇄; picking
+      one opens a pick-up/dismiss choice (pick-up → ``(HANDOFF_PICK, record)``, a
+      seed-based launch that honours the distil; dismiss drops the offer + re-lists).
+    * **routines** (*allow_new* True) — a run is a fresh execution, NOT a
+      handoff-continuation, so "+ new run" stays and there is no auto-first.
+
+    Returns ``(slug, path, is_new)`` | ``(HANDOFF_PICK, record)`` | :data:`select.BACK`.
+    """
+    by_session = {o["session"]: o["record"] for o in (offers or [])}
+    while True:
+        sessions = list_sessions(project, thread_slug)
+        if not allow_new and not sessions:
+            # Thread law: the first session is born with the (empty) thread.
+            slug_, path_ = _create_session(project, thread_slug, "")
+            return slug_, path_, True
+        flagged = [s for s in sessions if s["slug"] in by_session]
+        rest = [s for s in sessions if s["slug"] not in by_session]
+        ordered = flagged + rest
+        labels = [
+            (OFFER_SESSION_MARK if s["slug"] in by_session else "") + _session_label(s)
+            for s in ordered
+        ]
+        hint = "continue one, or start new" if allow_new else "resume one (⇄ = pick up a handoff)"
+        choice = select.select(
+            "{0} in {1} {2} — {3}:".format(item, container, thread_slug, hint),
+            labels,
+            allow_new=allow_new, new_label=new_label, allow_back=True,
+        )
+        if choice == select.BACK:
+            return select.BACK
+        if choice == select.NEW:
+            slug_, path_ = _create_session(project, thread_slug, "")
+            return slug_, path_, True
+        chosen = ordered[choice]
+        rec = by_session.get(chosen["slug"])
+        if rec is None:
+            return chosen["slug"], chosen["path"], False  # a plain session → resume
+        action = _offered_action(rec)
+        if action == "pickup":
+            return (HANDOFF_PICK, rec)
+        if action == "dismiss":
+            from .. import handoff_queue  # lazy: avoid import cycle
+            try:
+                handoff_queue.drop(paths.control_home(), rec["name"])
+            except Exception:  # noqa: BLE001  dismiss is best-effort, never fatal
+                pass
+            by_session.pop(chosen["slug"], None)
+            continue  # re-list without the dropped offer
+        continue  # back → re-show the session list
+
+
+def _navigate_session(project, project_name, offers=None):
     """Interactive thread→session with Back between the steps.
 
-    Returns the bound-session dict, or :data:`select.BACK` to go back to the
-    project picker.
+    *offers* (this project's pending handoffs, annotated with thread/session by
+    :func:`project_offers`) mark/float the thread (⊕) and the offered session (⇄).
+    Returns the bound-session dict, ``(HANDOFF_PICK, record)`` when an offer is
+    picked up, or :data:`select.BACK` to go back to the project picker.
     """
+    offers = offers or []
+    offer_threads = {o["thread"] for o in offers}
     while True:
-        thread = _pick_thread_interactive(project, project_name)
+        thread = _pick_thread_interactive(project, project_name, offer_threads)
         if thread == select.BACK:
             return select.BACK
         if not thread:  # blank new-thread name → re-show the thread step
             continue
-        sess = _pick_session_interactive(project, thread)
+        thread_offers = [o for o in offers if o["thread"] == thread]
+        sess = _pick_session_interactive(project, thread, thread_offers)
         if sess == select.BACK:
             continue  # back to the thread step
+        if isinstance(sess, tuple) and sess and sess[0] == HANDOFF_PICK:
+            return sess  # propagate the handoff pickup up to cmd_menu
         sess_slug, sess_path, is_new = sess
         if sess_slug is None:
             continue
@@ -553,8 +667,12 @@ def _navigate_routine(project, project_name):
             return select.BACK
         if not routine:  # blank new-routine name → re-show the routine step
             continue
-        # A routine's runs ARE sessions inside it — reuse the session picker.
-        sess = _pick_session_interactive(project, routine)
+        # A routine's runs ARE sessions inside it — reuse the session picker, but a
+        # run is a fresh execution (not a handoff-continuation), so "+ new run" stays.
+        sess = _pick_session_interactive(
+            project, routine, allow_new=True, new_label="+ new run",
+            item="Run", container="routine",
+        )
         if sess == select.BACK:
             continue  # back to the routine step
         sess_slug, sess_path, is_new = sess
@@ -565,22 +683,24 @@ def _navigate_routine(project, project_name):
         )
 
 
-def _navigate_type(project, project_name):
-    """The TYPE step (Task vs Routine) after a project, with Back to the project.
+def _navigate_type(project, project_name, offers=None):
+    """The TYPE step (Threads vs Routines) after a project, with Back to the project.
 
-    Returns the bound dict, or :data:`select.BACK` to go back to the project picker.
+    *offers* (the project's pending handoffs) flow into the Threads side so an offer
+    surfaces inside its thread. Returns the bound dict, ``(HANDOFF_PICK, record)`` on
+    a pickup, or :data:`select.BACK` to go back to the project picker.
     """
     while True:
         choice = select.select(
             "What in {0}?".format(project_name),
-            ["Task", "Routine"],
+            ["Threads", "Routines"],
             allow_new=False, allow_back=True,
         )
         if choice == select.BACK:
             return select.BACK  # back to the project picker
-        if choice == 0:  # Task → the existing thread→session flow
-            nav = _navigate_session(project, project_name)
-        else:  # Routine → the routine→run flow
+        if choice == 0:  # Threads → the thread→session flow (carries handoffs)
+            nav = _navigate_session(project, project_name, offers)
+        else:  # Routines → the routine→run flow
             nav = _navigate_routine(project, project_name)
         if nav == select.BACK:
             continue  # back to the type step
@@ -591,38 +711,32 @@ def _navigate_type(project, project_name):
 HANDOFF_PICK = "handoff"
 
 
-def _handoff_label(rec: Dict) -> str:
-    """The first-screen row for a pending handoff offer (distinct ⇄ prefix)."""
-    return "⇄ handoff · {0} → {1}  ({2})".format(rec["slug"], rec["project"], rec["mode"])
-
-
 def navigate_interactive(entries, handoffs=None):
     """Full project→type→(thread→session | routine→run) arrow flow with Back.
 
-    Pending *handoffs* (offered records) are surfaced as first-class rows at the TOP
-    of the first screen (``⇄ handoff · …``); picking one returns
-    ``(HANDOFF_PICK, record)`` for an immediate seed-based pickup — no thread/session
-    nav. Picking a project runs the normal TYPE → thread/session flow. Returns
-    ``(entry, bound)``, ``(HANDOFF_PICK, record)``, or None (cancel).
+    The root screen lists **projects only** — pending *handoffs* no longer clutter it.
+    Each offer instead surfaces INSIDE its own thread: after a project is picked, its
+    offers (mapped by :func:`project_offers`) mark/float the thread (⊕) and the
+    offered session (⇄), and picking that session up returns ``(HANDOFF_PICK, record)``
+    for a seed-based launch. Returns ``(entry, bound)``, ``(HANDOFF_PICK, record)``,
+    or None (cancel).
     """
     handoffs = handoffs or []
     while True:
-        labels = [_handoff_label(h) for h in handoffs] + [
-            "{0} → {1}".format(e["name"], e["path"]) for e in entries
-        ]
-        title = (
-            "Resume a handoff, or pick a project to lead this session:"
-            if handoffs else "Pick a project to lead this session:"
+        labels = ["{0} → {1}".format(e["name"], e["path"]) for e in entries]
+        choice = select.select(
+            "Pick a project to lead this session:", labels,
+            allow_new=False, allow_back=True,
         )
-        choice = select.select(title, labels, allow_new=False, allow_back=True)
         if choice == select.BACK:
             return None  # back out of the first step = cancel
-        if choice < len(handoffs):
-            return (HANDOFF_PICK, handoffs[choice])
-        entry = entries[choice - len(handoffs)]
-        nav = _navigate_type(Path(entry["path"]).expanduser(), entry["name"])
+        entry = entries[choice]
+        project = Path(entry["path"]).expanduser()
+        nav = _navigate_type(project, entry["name"], project_offers(handoffs, project))
         if nav == select.BACK:
             continue  # back to the first picker
+        if isinstance(nav, tuple) and nav and nav[0] == HANDOFF_PICK:
+            return nav  # an offer was picked up inside its thread
         return entry, nav
 
 

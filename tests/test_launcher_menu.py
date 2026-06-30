@@ -496,6 +496,26 @@ def test_pick_session_nonempty_thread_is_resume_only(home_with_project, monkeypa
     assert captured.get("allow_new") is False  # '+ new session' NOT offered
 
 
+def test_pick_run_routine_keeps_new_run(home_with_project, monkeypatch):
+    """Routines do NOT inherit the thread law: '+ new run' stays (a run is fresh work)."""
+    _, proj = home_with_project
+    from tide.arc import stream
+    stream.new_routine(proj, "deploy")
+    stream.new_session(proj, "deploy", "run-one")  # routine already has a run
+    captured = {}
+
+    def fake_select(title, options, **kwargs):
+        captured.update(kwargs)
+        return menu.select.NEW  # pick "+ new run"
+
+    monkeypatch.setattr(menu.select, "select", fake_select)
+    slug_, path_, is_new = menu._pick_session_interactive(
+        proj, "deploy", allow_new=True, new_label="+ new run", item="Run", container="routine"
+    )
+    assert captured.get("allow_new") is True  # '+ new run' IS offered (unlike threads)
+    assert is_new is True  # a fresh run was created
+
+
 def test_build_launch_skips_permissions_by_default(home_with_project):
     home, proj = home_with_project
     command = menu.build_launch(proj, control_home=home, dry_run=True)
