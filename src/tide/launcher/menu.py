@@ -149,12 +149,12 @@ def select_entries(entries: List[Dict[str, str]], raw: str) -> List[Dict[str, st
     return [entries[i - 1] for i in picks]
 
 
-# --- prism (призма) + session selection ------------------------------------
+# --- thread (тред) + session selection ------------------------------------
 # After a project is picked, the human binds the session in TWO steps: pick a
-# PRISM (призма — the arc through which a work-line is managed), then a SESSION
+# THREAD (тред — the arc through which a work-line is managed), then a SESSION
 # inside it (continue one, or start new). At each step `0` ALWAYS means "+ new".
 # The chosen session's passport becomes the seed's arc_text (sessions live in a
-# prism substream that the top-stream read_arc_passport would miss); the prism
+# thread substream that the top-stream read_arc_passport would miss); the thread
 # name frames the seed. See tide.arc.stream.
 
 PICK_NEW = "0"  # the universal "new" pick — 0 is always new
@@ -168,10 +168,10 @@ def _ask(prompt: str) -> str:
         return ""
 
 
-def list_prisms(project: Path) -> List[Dict[str, str]]:
-    """A project's open prisms for the picker: ``[{slug, name, goal, path}, …]``."""
+def list_threads(project: Path) -> List[Dict[str, str]]:
+    """A project's open threads for the picker: ``[{slug, name, goal, path}, …]``."""
     out = []
-    for entry in stream.prism_entries(project):
+    for entry in stream.thread_entries(project):
         goal = (fields.read_field(stream.passport_path(entry), "goal") or "").strip()
         out.append({
             "slug": slug.entry_slug(entry.name),
@@ -182,15 +182,15 @@ def list_prisms(project: Path) -> List[Dict[str, str]]:
     return out
 
 
-def list_sessions(project: Path, prism_slug: str) -> List[Dict[str, str]]:
-    """A prism's open sessions newest-first: ``[{slug, name, title, from, path}, …]``.
+def list_sessions(project: Path, thread_slug: str) -> List[Dict[str, str]]:
+    """A thread's open sessions newest-first: ``[{slug, name, title, from, path}, …]``.
 
     ``stream.session_entries`` numbers the substream NN ascending (oldest first —
     chaining relies on that order); the picker reverses it so the freshest session
     — the one a handoff just seeded — sits at the top, older ones aging downward.
     """
     out = []
-    for entry in stream.session_entries(project, prism_slug):
+    for entry in stream.session_entries(project, thread_slug):
         pp = entry / "arc.md"
         frm = (fields.read_field(pp, "from") or "").strip()
         title = (fields.read_field(pp, "title") or "").strip()
@@ -205,20 +205,20 @@ def list_sessions(project: Path, prism_slug: str) -> List[Dict[str, str]]:
     return out
 
 
-def render_prism_menu(project_name: str, prisms: List[Dict[str, str]]) -> str:
-    """Numbered prism pick-list for *project_name*; ``0`` is the '+ new' row."""
-    lines = ["Prism (призма) for {0} — 0 = new prism, or continue one:".format(project_name)]
-    lines.append("  0) + new prism")
-    for i, p in enumerate(prisms, start=1):
+def render_thread_menu(project_name: str, threads: List[Dict[str, str]]) -> str:
+    """Numbered thread pick-list for *project_name*; ``0`` is the '+ new' row."""
+    lines = ["Thread (тред) for {0} — 0 = new thread, or continue one:".format(project_name)]
+    lines.append("  0) + new thread")
+    for i, p in enumerate(threads, start=1):
         goal = p.get("goal") or ""
         suffix = " — {0}".format(goal) if goal and not goal.startswith("<") else ""
         lines.append("  {0}) {1}{2}".format(i, p["slug"], suffix))
     return "\n".join(lines)
 
 
-def render_session_menu(prism_slug: str, sessions: List[Dict[str, str]]) -> str:
-    """Numbered session pick-list inside *prism_slug*, with from→ lineage; ``0`` = new."""
-    lines = ["Session in prism {0} — 0 = new session, or continue one:".format(prism_slug)]
+def render_session_menu(thread_slug: str, sessions: List[Dict[str, str]]) -> str:
+    """Numbered session pick-list inside *thread_slug*, with from→ lineage; ``0`` = new."""
+    lines = ["Session in thread {0} — 0 = new session, or continue one:".format(thread_slug)]
     lines.append("  0) + new session")
     for i, s in enumerate(sessions, start=1):
         title = " — {0}".format(s["title"]) if s.get("title") else ""
@@ -227,8 +227,8 @@ def render_session_menu(prism_slug: str, sessions: List[Dict[str, str]]) -> str:
     return "\n".join(lines)
 
 
-def _prism_label(p: Dict[str, str]) -> str:
-    """One prism row's label for the arrow picker — numeric index first: ``NN  slug — goal``."""
+def _thread_label(p: Dict[str, str]) -> str:
+    """One thread row's label for the arrow picker — numeric index first: ``NN  slug — goal``."""
     index = p["name"].split("-", 1)[0] if p.get("name") else ""
     goal = p.get("goal") or ""
     suffix = " — {0}".format(goal) if goal and not goal.startswith("<") else ""
@@ -257,7 +257,7 @@ def _routine_label(r: Dict[str, str]) -> str:
     """One routine row's label for the arrow picker — gear-marked: ``⚙ NN  slug — goal``.
 
     The ⚙ marker sets routines apart from tasks visually (routines have nothing to
-    do with prisms); numeric index first, like the prism/session rows.
+    do with threads); numeric index first, like the thread/session rows.
     """
     index = r["name"].split("-", 1)[0] if r.get("name") else ""
     goal = r.get("goal") or ""
@@ -295,11 +295,11 @@ def parse_pick(raw: str, count: int):
     raise MenuError("pick: {0} out of range (0 for new, 1..{1})".format(n, count))
 
 
-def _create_prism(project: Path, name: str) -> Optional[str]:
+def _create_thread(project: Path, name: str) -> Optional[str]:
     name = (name or "").strip()
     if not name:
         return None
-    return slug.entry_slug(stream.new_prism(project, name).name)
+    return slug.entry_slug(stream.new_thread(project, name).name)
 
 
 def _create_routine(project: Path, name: str) -> Optional[str]:
@@ -309,53 +309,53 @@ def _create_routine(project: Path, name: str) -> Optional[str]:
     return slug.entry_slug(stream.new_routine(project, name).name)
 
 
-def _create_session(project: Path, prism_slug: str, name: str):
+def _create_session(project: Path, thread_slug: str, name: str):
     name = (name or "").strip() or "session"
-    entry = stream.new_session(project, prism_slug, name)
+    entry = stream.new_session(project, thread_slug, name)
     return slug.entry_slug(entry.name), str(entry)
 
 
-def _resolve_prism(project, project_name, *, prism_ref, new_prism, interactive):
-    """Continue/create a prism. A flag wins; else interactive 0=new pick; else None."""
-    if new_prism:
-        return _create_prism(project, new_prism)
-    if prism_ref:
-        return prism_ref
+def _resolve_thread(project, project_name, *, thread_ref, new_thread, interactive):
+    """Continue/create a thread. A flag wins; else interactive 0=new pick; else None."""
+    if new_thread:
+        return _create_thread(project, new_thread)
+    if thread_ref:
+        return thread_ref
     if not interactive:
         return None
-    prisms = list_prisms(project)
+    threads = list_threads(project)
     choice = select.select(
-        "Prism (призма) for {0} — continue one, or start new:".format(project_name),
-        [_prism_label(p) for p in prisms],
+        "Thread (тред) for {0} — continue one, or start new:".format(project_name),
+        [_thread_label(p) for p in threads],
         allow_new=True,
-        new_label="+ new prism",
+        new_label="+ new thread",
     )
     if choice == select.NEW:
-        return _create_prism(project, _ask("new prism name> "))
-    return prisms[choice]["slug"]
+        return _create_thread(project, _ask("new thread name> "))
+    return threads[choice]["slug"]
 
 
-def _resolve_session(project, prism_slug, *, session_ref, new_session, interactive):
-    """Continue/create a session inside *prism_slug*. Returns (slug, path, is_new).
+def _resolve_session(project, thread_slug, *, session_ref, new_session, interactive):
+    """Continue/create a session inside *thread_slug*. Returns (slug, path, is_new).
 
     ``is_new`` is True when the session was just created (so it gets a fresh pinned
     claude session-id); False when continuing an existing one (so it resumes).
     """
     if new_session:
-        slug_, path_ = _create_session(project, prism_slug, new_session)
+        slug_, path_ = _create_session(project, thread_slug, new_session)
         return slug_, path_, True
     if session_ref:
-        for s in list_sessions(project, prism_slug):
+        for s in list_sessions(project, thread_slug):
             if s["slug"] == session_ref:
                 return session_ref, s["path"], False
         return session_ref, None, False
     if not interactive:
-        # entering a prism non-interactively means a fresh session in it
-        slug_, path_ = _create_session(project, prism_slug, "session")
+        # entering a thread non-interactively means a fresh session in it
+        slug_, path_ = _create_session(project, thread_slug, "session")
         return slug_, path_, True
-    sessions = list_sessions(project, prism_slug)
+    sessions = list_sessions(project, thread_slug)
     choice = select.select(
-        "Session in prism {0} — continue one, or start new:".format(prism_slug),
+        "Session in thread {0} — continue one, or start new:".format(thread_slug),
         [_session_label(s) for s in sessions],
         allow_new=True,
         new_label="+ new session",
@@ -363,7 +363,7 @@ def _resolve_session(project, prism_slug, *, session_ref, new_session, interacti
     if choice == select.NEW:
         # No name prompt — sessions are auto-named (NN-session); the human title
         # is written later by offload/handoff (the `title:` field).
-        slug_, path_ = _create_session(project, prism_slug, "")
+        slug_, path_ = _create_session(project, thread_slug, "")
         return slug_, path_, True
     chosen = sessions[choice]
     return chosen["slug"], chosen["path"], False
@@ -390,8 +390,8 @@ def resolve_session(
     project: Path,
     project_name: str,
     *,
-    prism_ref: Optional[str] = None,
-    new_prism: Optional[str] = None,
+    thread_ref: Optional[str] = None,
+    new_thread: Optional[str] = None,
     routine_ref: Optional[str] = None,
     new_routine: Optional[str] = None,
     session_ref: Optional[str] = None,
@@ -400,22 +400,22 @@ def resolve_session(
 ) -> Optional[Dict[str, Optional[str]]]:
     """Bind a session/run for one project: resolve a container, then a session in it.
 
-    The container is a **prism** (a task work-line) or — when *routine_ref* /
+    The container is a **thread** (a task work-line) or — when *routine_ref* /
     *new_routine* is given — a **routine** (a reusable procedure, whose runs ARE
-    sessions). A routine flag wins over a prism flag. Returns ``{"arc_ref",
-    "arc_text", "prism", "kind", "session_id", "resume", …}`` — the session slug,
-    its passport text for the seed, the container (in the ``prism`` slot), its
-    ``kind`` (``"prism"``/``"routine"``), the pinned claude session-id, and whether
+    sessions). A routine flag wins over a thread flag. Returns ``{"arc_ref",
+    "arc_text", "thread", "kind", "session_id", "resume", …}`` — the session slug,
+    its passport text for the seed, the container (in the ``thread`` slot), its
+    ``kind`` (``"thread"``/``"routine"``), the pinned claude session-id, and whether
     to ``--resume``. None when nothing is bound.
     """
     if new_routine or routine_ref:
         container = _create_routine(project, new_routine) if new_routine else routine_ref
         kind = stream.KIND_ROUTINE
     else:
-        container = _resolve_prism(
-            project, project_name, prism_ref=prism_ref, new_prism=new_prism, interactive=interactive
+        container = _resolve_thread(
+            project, project_name, thread_ref=thread_ref, new_thread=new_thread, interactive=interactive
         )
-        kind = stream.KIND_PRISM
+        kind = stream.KIND_THREAD
     if container is None:
         return None
     sess_slug, sess_path, is_new = _resolve_session(
@@ -426,11 +426,11 @@ def resolve_session(
     return _session_binding(sess_slug, sess_path, is_new, container, kind=kind)
 
 
-def _session_binding(sess_slug, sess_path, is_new, prism, *, kind=stream.KIND_PRISM) -> Dict[str, Optional[str]]:
+def _session_binding(sess_slug, sess_path, is_new, thread, *, kind=stream.KIND_THREAD) -> Dict[str, Optional[str]]:
     """Build the bound-session dict (passport, claude session-id/resume, label bits).
 
-    *kind* is ``"prism"`` (a task session) or ``"routine"`` (a routine run). The
-    container slug lives in the ``prism`` slot either way so ``build_launch``/seed
+    *kind* is ``"thread"`` (a task session) or ``"routine"`` (a routine run). The
+    container slug lives in the ``thread`` slot either way so ``build_launch``/seed
     reuse is unchanged; ``kind`` lets the tab title / seed frame a run as a routine.
     """
     arc_text = None
@@ -450,7 +450,7 @@ def _session_binding(sess_slug, sess_path, is_new, prism, *, kind=stream.KIND_PR
     return {
         "arc_ref": sess_slug,
         "arc_text": arc_text,
-        "prism": prism,
+        "thread": thread,
         "kind": kind,
         "session_id": session_id,
         "resume": resume,
@@ -459,65 +459,65 @@ def _session_binding(sess_slug, sess_path, is_new, prism, *, kind=stream.KIND_PR
     }
 
 
-# --- interactive navigation (project → prism → session, with Back) ---------
+# --- interactive navigation (project → thread → session, with Back) ---------
 
-def _pick_prism_interactive(project, project_name):
-    """Arrow-pick a prism: return its slug, create on NEW, or :data:`select.BACK`."""
-    prisms = list_prisms(project)
+def _pick_thread_interactive(project, project_name):
+    """Arrow-pick a thread: return its slug, create on NEW, or :data:`select.BACK`."""
+    threads = list_threads(project)
     choice = select.select(
-        "Prism (призма) for {0} — continue one, or start new:".format(project_name),
-        [_prism_label(p) for p in prisms],
-        allow_new=True, new_label="+ new prism", allow_back=True,
+        "Thread (тред) for {0} — continue one, or start new:".format(project_name),
+        [_thread_label(p) for p in threads],
+        allow_new=True, new_label="+ new thread", allow_back=True,
     )
     if choice == select.BACK:
         return select.BACK
     if choice == select.NEW:
-        return _create_prism(project, _ask("new prism name> "))
-    return prisms[choice]["slug"]
+        return _create_thread(project, _ask("new thread name> "))
+    return threads[choice]["slug"]
 
 
-def _pick_session_interactive(project, prism_slug):
+def _pick_session_interactive(project, thread_slug):
     """Arrow-pick a session: return (slug, path, is_new), or :data:`select.BACK`."""
-    sessions = list_sessions(project, prism_slug)
+    sessions = list_sessions(project, thread_slug)
     choice = select.select(
-        "Session in prism {0} — continue one, or start new:".format(prism_slug),
+        "Session in thread {0} — continue one, or start new:".format(thread_slug),
         [_session_label(s) for s in sessions],
         allow_new=True, new_label="+ new session", allow_back=True,
     )
     if choice == select.BACK:
         return select.BACK
     if choice == select.NEW:
-        slug_, path_ = _create_session(project, prism_slug, "")
+        slug_, path_ = _create_session(project, thread_slug, "")
         return slug_, path_, True
     chosen = sessions[choice]
     return chosen["slug"], chosen["path"], False
 
 
 def _navigate_session(project, project_name):
-    """Interactive prism→session with Back between the steps.
+    """Interactive thread→session with Back between the steps.
 
     Returns the bound-session dict, or :data:`select.BACK` to go back to the
     project picker.
     """
     while True:
-        prism = _pick_prism_interactive(project, project_name)
-        if prism == select.BACK:
+        thread = _pick_thread_interactive(project, project_name)
+        if thread == select.BACK:
             return select.BACK
-        if not prism:  # blank new-prism name → re-show the prism step
+        if not thread:  # blank new-thread name → re-show the thread step
             continue
-        sess = _pick_session_interactive(project, prism)
+        sess = _pick_session_interactive(project, thread)
         if sess == select.BACK:
-            continue  # back to the prism step
+            continue  # back to the thread step
         sess_slug, sess_path, is_new = sess
         if sess_slug is None:
             continue
-        return _session_binding(sess_slug, sess_path, is_new, prism)
+        return _session_binding(sess_slug, sess_path, is_new, thread)
 
 
 def _pick_routine_interactive(project, project_name):
     """Arrow-pick a routine: return its slug, create on NEW, or :data:`select.BACK`.
 
-    Routine rows are gear-marked (⚙) so they read differently from task prisms.
+    Routine rows are gear-marked (⚙) so they read differently from task threads.
     """
     routines = list_routines(project)
     choice = select.select(
@@ -535,7 +535,7 @@ def _pick_routine_interactive(project, project_name):
 def _navigate_routine(project, project_name):
     """Interactive routine→run with Back between the steps.
 
-    Mirrors :func:`_navigate_session` but lists routines (not prisms) and binds a
+    Mirrors :func:`_navigate_session` but lists routines (not threads) and binds a
     **run** (a session inside the routine), tagged ``kind="routine"``. Returns the
     bound dict, or :data:`select.BACK` to go back to the type step.
     """
@@ -570,7 +570,7 @@ def _navigate_type(project, project_name):
         )
         if choice == select.BACK:
             return select.BACK  # back to the project picker
-        if choice == 0:  # Task → the existing prism→session flow
+        if choice == 0:  # Task → the existing thread→session flow
             nav = _navigate_session(project, project_name)
         else:  # Routine → the routine→run flow
             nav = _navigate_routine(project, project_name)
@@ -589,12 +589,12 @@ def _handoff_label(rec: Dict) -> str:
 
 
 def navigate_interactive(entries, handoffs=None):
-    """Full project→type→(prism→session | routine→run) arrow flow with Back.
+    """Full project→type→(thread→session | routine→run) arrow flow with Back.
 
     Pending *handoffs* (offered records) are surfaced as first-class rows at the TOP
     of the first screen (``⇄ handoff · …``); picking one returns
-    ``(HANDOFF_PICK, record)`` for an immediate seed-based pickup — no prism/session
-    nav. Picking a project runs the normal TYPE → prism/session flow. Returns
+    ``(HANDOFF_PICK, record)`` for an immediate seed-based pickup — no thread/session
+    nav. Picking a project runs the normal TYPE → thread/session flow. Returns
     ``(entry, bound)``, ``(HANDOFF_PICK, record)``, or None (cancel).
     """
     handoffs = handoffs or []
@@ -701,8 +701,8 @@ def build_launch(
     role: str = DEFAULT_ROLE,
     arc_ref: Optional[str] = None,
     arc_text: Optional[str] = None,
-    prism_name: Optional[str] = None,
-    container_kind: str = stream.KIND_PRISM,
+    thread_name: Optional[str] = None,
+    container_kind: str = stream.KIND_THREAD,
     session_id: Optional[str] = None,
     resume: bool = False,
     skip_permissions: bool = True,
@@ -719,7 +719,7 @@ def build_launch(
       errors. The ``|| <fresh>`` fallback then launches a fresh seeded session under
       the same id, so re-entry is always forgiving (returned as ``sh -c``).
     * **fresh** (otherwise): a seeded launch (*arc_ref*/*arc_text* carry the bound
-      session's passport, *prism_name* frames it). *session_id*, when given, is
+      session's passport, *thread_name* frames it). *session_id*, when given, is
       pinned via ``--session-id`` so a later entry can ``--resume`` this exact
       conversation. On dry-run a placeholder seed-file token is used.
     """
@@ -729,7 +729,7 @@ def build_launch(
         role=role,
         arc_ref=arc_ref,
         arc_text=arc_text,
-        prism_name=prism_name,
+        thread_name=thread_name,
         container_kind=container_kind,
         session_id=session_id,
         skip_permissions=skip_permissions,
@@ -757,7 +757,7 @@ def _fresh_command(
     role: str,
     arc_ref: Optional[str],
     arc_text: Optional[str],
-    prism_name: Optional[str],
+    thread_name: Optional[str],
     container_kind: str,
     session_id: Optional[str],
     skip_permissions: bool,
@@ -779,7 +779,7 @@ def _fresh_command(
             control_home=control_home,
             arc_ref=arc_ref,
             arc_text=arc_text,
-            prism_name=prism_name,
+            thread_name=thread_name,
             container_kind=container_kind,
         )
         title = "tide-{0}".format(project.name)
@@ -799,8 +799,8 @@ def _session_launch_kwargs(entry: Dict) -> Dict:
     return {
         "arc_ref": s.get("arc_ref"),
         "arc_text": s.get("arc_text"),
-        "prism_name": s.get("prism"),
-        "container_kind": s.get("kind") or stream.KIND_PRISM,
+        "thread_name": s.get("thread"),
+        "container_kind": s.get("kind") or stream.KIND_THREAD,
         "session_id": s.get("session_id"),
         "resume": bool(s.get("resume")),
     }
@@ -818,7 +818,7 @@ def launch_entry(
     """Build the scoped launch command for one rostered project and spawn it.
 
     A resolved session is carried on the entry under the ``"session"`` key (the
-    prism + session passport the seed binds to); absent ⇒ no binding. The session
+    thread + session passport the seed binds to); absent ⇒ no binding. The session
     is spawned with ``cwd`` = the project dir (so its ``CLAUDE.md`` loads).
     """
     project = Path(entry["path"]).expanduser()
@@ -843,11 +843,11 @@ def _tab_title(entry: Dict) -> str:
     ``tide-<project>`` when no session is bound.
     """
     s = entry.get("session") or {}
-    prism = s.get("prism")
-    if not prism:
+    thread = s.get("thread")
+    if not thread:
         return "tide-{0}".format(entry["name"])
     session = s.get("session_title") or s.get("session_index") or s.get("arc_ref") or "session"
-    title = "{0} · {1}".format(session, prism)
+    title = "{0} · {1}".format(session, thread)
     if s.get("kind") == stream.KIND_ROUTINE:
         return "{0}{1}".format(ROUTINE_MARKER, title)
     return title
@@ -965,7 +965,7 @@ def cmd_menu(args) -> int:
 
     if interactive and select.is_interactive_tty():
         # TTY: pending handoffs sit at the TOP of the first picker; below them the
-        # normal project → type → prism/session flow, with ←/Esc Back between steps.
+        # normal project → type → thread/session flow, with ←/Esc Back between steps.
         nav = navigate_interactive(entries, handoffs=pending)
         if nav is None:
             print("tide: cancelled")
@@ -1000,8 +1000,8 @@ def cmd_menu(args) -> int:
             {**entry, "session": resolve_session(
                 Path(entry["path"]).expanduser(),
                 entry["name"],
-                prism_ref=getattr(args, "prism", None),
-                new_prism=getattr(args, "new_prism", None),
+                thread_ref=getattr(args, "thread", None),
+                new_thread=getattr(args, "new_thread", None),
                 routine_ref=getattr(args, "routine", None),
                 new_routine=getattr(args, "new_routine", None),
                 session_ref=getattr(args, "session", None),
@@ -1049,15 +1049,18 @@ def register(subparsers) -> None:
     p.add_argument("--adapter", help="terminal adapter (orca|tmux; default from settings)")
     p.add_argument("--role", help="session role (default: orchestrator)")
     p.add_argument(
-        "--prism",
+        "--thread",
+        "--prism",  # back-compat alias (thread was once 'prism')
+        dest="thread",
         metavar="SLUG",
-        help="continue an existing prism (призма) by slug (else 0=new in the picker)",
+        help="continue an existing thread (тред) by slug (else 0=new in the picker)",
     )
     p.add_argument(
-        "--new-prism",
-        dest="new_prism",
+        "--new-thread",
+        "--new-prism",  # back-compat alias
+        dest="new_thread",
         metavar="NAME",
-        help="start a fresh prism (призма) with this name",
+        help="start a fresh thread (тред) with this name",
     )
     p.add_argument(
         "--routine",
@@ -1073,13 +1076,13 @@ def register(subparsers) -> None:
     p.add_argument(
         "--session",
         metavar="SLUG",
-        help="continue an existing session/run by slug inside the chosen prism/routine",
+        help="continue an existing session/run by slug inside the chosen thread/routine",
     )
     p.add_argument(
         "--new-session",
         dest="new_session",
         metavar="NAME",
-        help="start a fresh session with this name inside the chosen prism",
+        help="start a fresh session with this name inside the chosen thread",
     )
     p.add_argument(
         "--dry-run",
