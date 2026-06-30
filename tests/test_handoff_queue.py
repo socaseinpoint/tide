@@ -54,6 +54,57 @@ def test_take_unknown_key_raises(tmp_control_home):
         hq.take(tmp_control_home, "ghost")
 
 
+# --- drop (soft-archive an offer, prune its untouched session) -------------
+
+def test_drop_soft_archives_offer(tmp_control_home):
+    hq.offer(tmp_control_home, "skip-me", arc="-", project="p", seed="-")
+    rec, pruned = hq.drop(tmp_control_home, "skip-me")
+    assert rec["status"] == hq.STATUS_DROPPED
+    assert pruned is False  # no seed → nothing to prune
+    # the dropped offer no longer surfaces as pending
+    assert hq.list_offers(tmp_control_home, status=hq.STATUS_OFFERED) == []
+    # but the record is kept (soft archive, auditable)
+    assert [r["slug"] for r in hq.list_offers(tmp_control_home)] == ["skip-me"]
+
+
+def test_drop_refuses_taken_offer(tmp_control_home):
+    hq.offer(tmp_control_home, "done", arc="-", project="p", seed="-")
+    hq.take(tmp_control_home, "done", session="s")
+    with pytest.raises(hq.HandoffError, match="already taken"):
+        hq.drop(tmp_control_home, "done")
+
+
+def _seeded_session(tmp_path, *, with_work=False):
+    """Build a <session>/ dir with the handoff seed in input/; return the seed path."""
+    sess = tmp_path / "07-@thread" / "arcs" / "03-session"
+    (sess / "input").mkdir(parents=True)
+    (sess / "workspace").mkdir()
+    (sess / "output").mkdir()
+    (sess / "arc.md").write_text("# 03-session\nstatus: active\n", encoding="utf-8")
+    seed = sess / "input" / "handoff-seed.md"
+    seed.write_text("# seed\n", encoding="utf-8")
+    if with_work:
+        (sess / "workspace" / "notes.md").write_text("real progress\n", encoding="utf-8")
+    return sess, seed
+
+
+def test_drop_prunes_untouched_session(tmp_control_home, tmp_path):
+    sess, seed = _seeded_session(tmp_path)
+    hq.offer(tmp_control_home, "abandon", arc="thread/session", project="p", seed=str(seed))
+    rec, pruned = hq.drop(tmp_control_home, "abandon")
+    assert rec["status"] == hq.STATUS_DROPPED
+    assert pruned is True
+    assert not sess.exists()  # the never-touched seeded session is gone
+
+
+def test_drop_keeps_session_with_work(tmp_control_home, tmp_path):
+    sess, seed = _seeded_session(tmp_path, with_work=True)
+    hq.offer(tmp_control_home, "keep", arc="thread/session", project="p", seed=str(seed))
+    rec, pruned = hq.drop(tmp_control_home, "keep")
+    assert pruned is False  # real work in workspace/ → session kept (degrades to case A)
+    assert sess.exists()
+
+
 # --- CLI + hook ------------------------------------------------------------
 
 def test_cli_offer_then_confirm_hook_flips_status(tmp_control_home, tmp_path, monkeypatch):
