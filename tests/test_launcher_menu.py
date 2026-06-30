@@ -460,6 +460,42 @@ def test_list_sessions_newest_first(home_with_project):
     assert slugs == ["three", "two", "one"]  # newest first, oldest last
 
 
+def test_pick_session_empty_thread_auto_creates_first(home_with_project):
+    """Thread law: an EMPTY thread's first session is born automatically.
+
+    The first session begins the narrative — no '+ new session' prompt needed.
+    """
+    _, proj = home_with_project
+    from tide.arc import stream
+    stream.new_thread(proj, "kickoff")
+    slug_, path_, is_new = menu._pick_session_interactive(proj, "kickoff")
+    assert is_new is True
+    assert slug_  # a first session was created
+    assert [s["slug"] for s in menu.list_sessions(proj, "kickoff")] == [slug_]
+
+
+def test_pick_session_nonempty_thread_is_resume_only(home_with_project, monkeypatch):
+    """Thread law: a thread WITH sessions offers resume-only — no blank '+ new'.
+
+    Non-first sessions are born from handoffs (real context transfer), not from a
+    blank picker entry, so the session step must not advertise '+ new session'.
+    """
+    _, proj = home_with_project
+    from tide.arc import stream
+    stream.new_thread(proj, "kickoff")
+    stream.new_session(proj, "kickoff", "one")
+    captured = {}
+
+    def fake_select(title, options, **kwargs):
+        captured.update(kwargs)
+        return 0  # resume the first (only) session
+
+    monkeypatch.setattr(menu.select, "select", fake_select)
+    slug_, path_, is_new = menu._pick_session_interactive(proj, "kickoff")
+    assert is_new is False  # resumed, not created
+    assert captured.get("allow_new") is False  # '+ new session' NOT offered
+
+
 def test_build_launch_skips_permissions_by_default(home_with_project):
     home, proj = home_with_project
     command = menu.build_launch(proj, control_home=home, dry_run=True)

@@ -477,18 +477,26 @@ def _pick_thread_interactive(project, project_name):
 
 
 def _pick_session_interactive(project, thread_slug):
-    """Arrow-pick a session: return (slug, path, is_new), or :data:`select.BACK`."""
+    """Pick a session to resume, or — for an EMPTY thread — auto-create its first.
+
+    Thread law: a thread's sessions are a narrative connected by handoffs (real
+    context transfer), so there is no blank "+ new session" mid-thread. An empty
+    thread auto-gets its first session (begins the narrative); a thread that
+    already has sessions offers **resume-only** — the next session is born from a
+    handoff, not here. Returns (slug, path, is_new), or :data:`select.BACK`.
+    """
     sessions = list_sessions(project, thread_slug)
+    if not sessions:
+        # First session is born with the thread — begins the narrative.
+        slug_, path_ = _create_session(project, thread_slug, "")
+        return slug_, path_, True
     choice = select.select(
-        "Session in thread {0} — continue one, or start new:".format(thread_slug),
+        "Session in thread {0} — resume one (new sessions come from handoffs):".format(thread_slug),
         [_session_label(s) for s in sessions],
-        allow_new=True, new_label="+ new session", allow_back=True,
+        allow_new=False, allow_back=True,
     )
     if choice == select.BACK:
         return select.BACK
-    if choice == select.NEW:
-        slug_, path_ = _create_session(project, thread_slug, "")
-        return slug_, path_, True
     chosen = sessions[choice]
     return chosen["slug"], chosen["path"], False
 
