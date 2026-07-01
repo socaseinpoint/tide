@@ -15,12 +15,12 @@ each batch).
 
 ## Picker flow
 ```
-tide menu → project → TYPE: [ task | routine ]
-   task    → thread → session         (the existing flow)
-   routine → routine → run/continue  (new)
+tide menu → project → TYPE: [ Threads | Routines ]
+   Threads  → thread → session       (resume-only; new sessions come from handoffs)
+   Routines → routine → run/continue  (a run is a fresh execution — "+ new run" stays)
 ```
-- After the project, the human picks a **type**: Task (regular work) or Routine
-  (a reusable procedure). Back navigation applies (← /Esc) like everywhere.
+- After the project, the human picks a **type**: Threads (work-lines) or Routines
+  (reusable procedures). Back navigation applies (← /Esc) like everywhere.
 - Routine path: list the project's routines (with a distinct **icon/marker** so
   they read differently from tasks), pick one (or `0` = new routine), then start a
   new run or continue one. The run's seed carries the procedure + experience.
@@ -30,7 +30,7 @@ tide menu → project → TYPE: [ task | routine ]
   `is_routine()`, `routine_entries()`; runs reuse `new_session()`/`session_entries()`
   (a run IS a session inside the routine). CLI: `tide arc new-routine`.
 - `arc.templates`: `routine_md()` — `## steps` (the runbook) + `## experience`.
-- `launcher.menu`: a Type step after the project (Task/Routine) inside
+- `launcher.menu`: a Type step after the project (Threads/Routines) inside
   `navigate_interactive`, preserving Back; a routine branch that lists routines
   (marked with an icon) and binds a run; the tab title / seed frame it as a routine
   run. Keep all non-interactive/flag paths working.

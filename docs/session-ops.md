@@ -8,8 +8,11 @@ Outside these, the agent leaves the stream alone (minimal mode). Captured from t
 design conversation; OPEN questions marked ⛏.
 
 ## Model recap
-- **thread (треда)** — container, the arc through which arcs are managed.
-- **session** — one run inside a thread; numbered; chained by `from:`.
+- **thread (тред)** — a narrative work-line; a container whose sessions are chained
+  by handoffs (real context transfer), not blank re-entries. The thread law: the
+  first session is born with the thread; every later session comes from a handoff.
+- **session** — one run inside a thread; numbered; chained by `from:` (its handoff
+  parent). Sessions surface newest-first (the tip on top).
 - Each session passport carries `## cursor` (resume point) + `## context` (memory).
 
 ## offload
@@ -27,7 +30,11 @@ design conversation; OPEN questions marked ⛏.
 ## handoff = continue the SAME thread in a fresh session
 - Use when you want to keep going on this work-line but in a clean session.
 - offload first, then create a NEW **session** in the **same thread** with `from: <this session>`.
-- Opens a fresh **Orca terminal** (the existing `/handoff` skill already does this).
+- **Two-stage / pull (no auto-terminal).** The handoff **hangs an offer** in the queue
+  (`tide handoffs offer`); you pick it up yourself from `tide menu`, where the offered session
+  shows as the thread's **⇄ tip**. Picking it up launches from the seed (so the distil is honoured,
+  not a generic resume); the offer flips `offered → taken` on the picked-up session's first message.
+  Changed your mind? `tide handoffs drop <id>` dismisses the offer (and prunes its untouched session).
 - Writes the session `title:` + `## summary`: **what was done · what's left undone · where it's
   heading** (longer if the session is large). The new session is seeded with that.
 
@@ -37,11 +44,17 @@ design conversation; OPEN questions marked ⛏.
 - offload first, then create a NEW **thread** (+ its first session) recording where it came from.
 - Name: **spark** (an idea sparks a new thread; light-through-a-thread theme).
 
-## picker sub-choice (on continuing an existing session)
-- When you pick an existing session in `tide menu`, it asks:
-  **continue in the same context** OR **handoff into a new session**.
-- ⛏ "same context" = literal `claude --resume <id>` of that conversation, OR re-seed a fresh
-  session from the session's arc/cursor? (Different mechanisms — needs a decision.)
+## picker behaviour (RESOLVED by the thread law — shipped)
+- Opening a thread lists its sessions **resume-only** (newest/tip first). There is **no blank
+  "+ new session"** mid-thread — the next session is born from a handoff, not the picker. (An
+  EMPTY thread auto-creates its first session — the one that begins the narrative.)
+- "Resume" = literal `claude --resume <id>` of that conversation, with a fresh-seeded fallback
+  (`|| <seeded>`) when the pinned id has no persisted conversation yet. This settles the old
+  "same context vs re-seed" question: resume IS same-context; a fresh line is a handoff.
+- A session carrying a **pending handoff** shows marked **⇄** and floats to the tip; picking it
+  opens a **pick up / dismiss** sub-choice — pick up launches from the distil seed, dismiss calls
+  `tide handoffs drop` (soft-archive + prune the untouched session).
+- Routines differ: a **run** is a fresh execution, so the routine picker keeps **"+ new run"**.
 
 ## Session title + summary (for reading sessions later)
 - Each session has an **index** (its NN number), a **title:** (human, one line), and a
@@ -56,10 +69,11 @@ design conversation; OPEN questions marked ⛏.
 - Stdlib-only constraint → `curses` (no deps). Must **degrade gracefully**: when stdin/stdout is
   not a TTY (pipes, `--pick`, tests) fall back to the current numbered/`0=new` text path.
 
-## ⛏ Open question — picker "same context vs handoff"
-When continuing an existing session the picker asks: **same context** or **handoff to new**.
-"Same context" = literal `claude --resume <id>` of that conversation, OR re-seed a fresh session
-from the arc/cursor? Different mechanisms — needs a decision before the sub-choice is built.
+## ✓ Resolved — picker "same context vs handoff"
+Settled by the **thread law**: continuing an existing session = **same context** (literal
+`claude --resume <id>`, fresh-seeded fallback). A new work-line is a **handoff** (a fresh
+seeded session), never a blank picker entry. So there is no per-session "same vs new" prompt —
+the picker is resume-only; only a **pending-handoff (⇄)** session offers a pick-up/dismiss choice.
 
 ## Build sketch (once OPEN questions close)
 - CLI primitive: `tide session offload <thread> <session> --at <N> [text]` — appends text under

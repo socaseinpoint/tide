@@ -43,7 +43,7 @@ tide arc new-routine <slug>
 # 2. Завести РАН рутины (вложенная арка-сессия)
 tide arc new-session <run-slug> -p <routine-slug>
 #   → .tide/arcs/NN-@<routine>/arcs/MM-<run-slug>/
-#   -p принимает slug рутины так же, как slug треды.
+#   -p принимает slug рутины так же, как slug треда.
 
 # 3. Прогон: веди ран ВНУТРИ его арки
 #   все файлы/артефакты/логи прогона → <run>/workspace/  (см. tide-flow, правило 2)
@@ -54,7 +54,7 @@ tide arc new-session <run-slug> -p <routine-slug>
 #   tide arc close <run-slug>
 ```
 
-При запуске рана через `tide menu` (Type → Routine) сид автоматически подкладывает
+При запуске рана через `tide menu` (проект → Routines → рутина → ран) сид автоматически подкладывает
 процедуру рутины (`## steps`/`## experience`) — это и есть твой runbook на прогон.
 
 ## Как НЕ надо (типовые перекосы)
