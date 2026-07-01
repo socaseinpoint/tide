@@ -32,6 +32,19 @@ def test_cli_arc_new_goal_then_nested_arc(in_project):
     assert (sub / "arc.md").is_file()
 
 
+def test_cli_arc_new_prism_is_a_thread_alias(in_project):
+    """Back-compat: the old ``new-prism`` subcommand still creates a thread.
+
+    A pre-rename session (or muscle memory) that runs ``tide arc new-prism`` must not
+    break — it aliases to ``new-thread`` (kind: thread).
+    """
+    from tide.arc import stream
+    assert cli.main(["arc", "new-prism", "kickoff"]) == 0
+    entry = paths.arcs_dir(in_project) / "01-@kickoff"
+    assert (entry / "kickoff-goal.md").is_file()
+    assert stream.entry_kind(entry) == stream.KIND_THREAD
+
+
 def test_cli_arc_close_guards_empty_output(in_project, capsys):
     cli.main(["arc", "new", "alpha"])
     rc = cli.main(["arc", "close", "alpha"])

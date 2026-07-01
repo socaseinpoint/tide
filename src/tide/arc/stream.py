@@ -833,7 +833,11 @@ def register(arc_subparsers) -> None:
     gp.add_argument("slug")
     gp.set_defaults(func=_cmd_new_goal, _cmd="arc new-goal")
 
-    tp = arc_subparsers.add_parser("new-thread", help="create a thread NN-@<slug>/ (kind: thread — a container of sessions)")
+    tp = arc_subparsers.add_parser(
+        "new-thread",
+        aliases=["new-prism"],  # back-compat: 'thread' was once 'prism' (old sessions/muscle memory)
+        help="create a thread NN-@<slug>/ (kind: thread — a container of sessions)",
+    )
     tp.add_argument("slug")
     tp.add_argument("-f", "--force", action="store_true", help="allow a duplicate of an existing open same-slug thread")
     tp.set_defaults(func=_cmd_new_thread, _cmd="arc new-thread")
